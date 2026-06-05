@@ -1014,3 +1014,35 @@ tbody td:first-child {
   }
 }
 
+.inline-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.impact-box {
+  background: #f0f7ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 3px;
+  padding: 12px 14px;
+  margin-bottom: 8px;
+}
+
+.impact-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--transit);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+
+.impact-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--corp);
+  padding: 3px 0;
+}
+
