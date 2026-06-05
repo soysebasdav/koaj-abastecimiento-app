@@ -11,6 +11,16 @@ export type FitRecord = {
   updated_at: string
 }
 
+export type FitFormInput = {
+  code: string
+  name: string
+  silhouette: string
+  category: string
+  gender: string
+  portfolio: string
+  status: 'active' | 'inactive'
+}
+
 export type MaterialRecord = {
   id: string
   code: string
@@ -34,6 +44,18 @@ export type MaterialRecord = {
   updated_at: string
 }
 
+export type MaterialFormInput = {
+  code: string
+  name: string
+  material_type: MaterialRecord['material_type']
+  unit: MaterialRecord['unit']
+  origin: 'national' | 'international' | ''
+  supplier_name: string
+  lead_time_days: string
+  is_fabric: boolean
+  status: 'active' | 'inactive'
+}
+
 export type FabricCompositionRecord = {
   id: string
   material_id: string
@@ -42,6 +64,12 @@ export type FabricCompositionRecord = {
   created_at: string
 }
 
+export type FabricCompositionInput = {
+  component_name: string
+  percentage: string
+}
+
 export type MaterialWithComposition = MaterialRecord & {
   composition_label: string
+  compositions: FabricCompositionRecord[]
 }
