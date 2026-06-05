@@ -11,17 +11,28 @@ import { KardexPage } from '../features/kardex/KardexPage'
 import { CollectionsPage } from '../features/collections/CollectionsPage'
 import { AuditPage } from '../features/audit/AuditPage'
 
-export function AppLayout() {
+type AppLayoutProps = {
+  userEmail: string
+  onSignOut: () => Promise<void>
+}
+
+export function AppLayout({ userEmail, onSignOut }: AppLayoutProps) {
   const [activeSection, setActiveSection] = useState<AppSection>('inicio')
 
   const title = useMemo(() => sectionTitles[activeSection], [activeSection])
 
   return (
     <div className="app-shell">
-      <Sidebar groups={navGroups} activeSection={activeSection} onSelect={setActiveSection} />
+      <Sidebar
+        groups={navGroups}
+        activeSection={activeSection}
+        onSelect={setActiveSection}
+        userEmail={userEmail}
+        onSignOut={onSignOut}
+      />
 
       <main id="main">
-        <Topbar title={title} onSelect={setActiveSection} />
+        <Topbar title={title} onSelect={setActiveSection} onSignOut={onSignOut} />
 
         <div id="content">
           {activeSection === 'inicio' || activeSection === 'dashboard' ? (

@@ -4,9 +4,13 @@ type SidebarProps = {
   groups: NavGroup[]
   activeSection: AppSection
   onSelect: (section: AppSection) => void
+  userEmail: string
+  onSignOut: () => Promise<void>
 }
 
-export function Sidebar({ groups, activeSection, onSelect }: SidebarProps) {
+export function Sidebar({ groups, activeSection, onSelect, userEmail, onSignOut }: SidebarProps) {
+  const initials = userEmail.slice(0, 2).toUpperCase()
+
   return (
     <nav id="sidebar">
       <div className="sidebar-logo">
@@ -38,12 +42,16 @@ export function Sidebar({ groups, activeSection, onSelect }: SidebarProps) {
 
       <div className="sidebar-bottom">
         <div className="user-info">
-          <div className="user-avatar">SG</div>
+          <div className="user-avatar">{initials}</div>
           <div>
-            <div className="user-name">Sebastián González</div>
-            <div className="user-role">Analista Abastecimiento</div>
+            <div className="user-name">{userEmail}</div>
+            <div className="user-role">Usuario autenticado</div>
           </div>
         </div>
+
+        <button className="sidebar-signout" type="button" onClick={() => void onSignOut()}>
+          Cerrar sesión
+        </button>
       </div>
     </nav>
   )

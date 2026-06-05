@@ -1,5 +1,5 @@
-import { AppLayout } from './app/AppLayout'
+import { AuthGate } from './app/AuthGate'
 
 export default function App() {
-  return <AppLayout />
+  return <AuthGate />
 }
