@@ -1,28 +1,188 @@
-import { useEffect, useMemo, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { Badge } from '../../components/Badge'
+import { Drawer } from '../../components/Drawer'
 import { TableShell } from '../../components/TableShell'
 import { formatDateMonth, formatNumber, formatPercent, mapUnit } from '../../utils/format'
-import { listBomLines, listVersionMix, type BomLineView, type VersionMixView } from './bomService'
+import {
+  createBomLine,
+  createVersionWithMix,
+  getBomFormOptions,
+  listBomLines,
+  listVersionMix,
+  updateBomLine,
+  updateVersionWithMix,
+} from './bomService'
+import type {
+  BomFormOptions,
+  BomLineFormInput,
+  BomLineRecordForAudit,
+  BomLineView,
+  FitVersionMixRecordForAudit,
+  FitVersionRecordForAudit,
+  VersionMixFormInput,
+  VersionMixView,
+} from './bomTypes'
+
+type DrawerMode = 'version-create' | 'version-edit' | 'bom-create' | 'bom-edit' | null
+
+const emptyVersionForm: VersionMixFormInput = {
+  collection_id: '',
+  fit_id: '',
+  version_code: '',
+  description: '',
+  color_range_start: '',
+  color_range_end: '',
+  main_material_id: '',
+  share_percentage: '',
+  valid_from_month: '',
+  valid_to_month: '',
+  change_reason: '',
+  status: 'active',
+}
+
+const emptyBomForm: BomLineFormInput = {
+  fit_version_id: '',
+  piece_name: '',
+  material_id: '',
+  pieces_per_unit: '1',
+  consumption_per_piece: '',
+  waste_percentage: '0',
+  valid_from_month: '',
+  valid_to_month: '',
+  status: 'active',
+  notes: '',
+}
 
 function mapStatus(status: 'active' | 'inactive') {
   return status === 'active' ? 'Activo' : 'Inactivo'
 }
 
+function toMonthInputValue(value: string | null | undefined) {
+  if (!value) return ''
+  return value.slice(0, 7)
+}
+
+function fromMonthInputValue(value: string) {
+  return value ? `${value}-01` : ''
+}
+
+function versionToForm(row: VersionMixView): VersionMixFormInput {
+  return {
+    collection_id: row.collectionId,
+    fit_id: row.fitId,
+    version_code: row.versionCode,
+    description: row.description ?? '',
+    color_range_start: row.colorRangeStart?.toString() ?? '',
+    color_range_end: row.colorRangeEnd?.toString() ?? '',
+    main_material_id: row.mainMaterialId ?? '',
+    share_percentage: row.sharePercentage.toString(),
+    valid_from_month: toMonthInputValue(row.validFromMonth),
+    valid_to_month: toMonthInputValue(row.validToMonth),
+    change_reason: row.changeReason ?? '',
+    status: row.status,
+  }
+}
+
+function versionAuditRecord(row: VersionMixView): FitVersionRecordForAudit {
+  return {
+    id: row.fitVersionId,
+    collection_id: row.collectionId,
+    fit_id: row.fitId,
+    version_code: row.versionCode,
+    description: row.description,
+    color_range_start: row.colorRangeStart,
+    color_range_end: row.colorRangeEnd,
+    main_material_id: row.mainMaterialId,
+    status: row.status,
+  }
+}
+
+function mixAuditRecord(row: VersionMixView): FitVersionMixRecordForAudit {
+  return {
+    id: row.id,
+    fit_version_id: row.fitVersionId,
+    valid_from_month: row.validFromMonth,
+    valid_to_month: row.validToMonth,
+    share_percentage: row.sharePercentage,
+    change_reason: row.changeReason,
+  }
+}
+
+function bomToForm(row: BomLineView, options: BomFormOptions): BomLineFormInput {
+  const version = options.fitVersions.find((item) =>
+    item.collectionCode === row.collectionCode
+    && item.fitName === row.fitName
+    && item.versionCode === row.versionCode
+  )
+  const material = options.materials.find((item) => item.code === row.materialCode)
+
+  return {
+    fit_version_id: version?.id ?? '',
+    piece_name: row.pieceName,
+    material_id: material?.id ?? '',
+    pieces_per_unit: row.piecesPerUnit.toString(),
+    consumption_per_piece: row.consumptionPerPiece.toString(),
+    waste_percentage: row.wastePercentage.toString(),
+    valid_from_month: toMonthInputValue(row.validFromMonth),
+    valid_to_month: toMonthInputValue(row.validToMonth),
+    status: row.status,
+    notes: row.notes ?? '',
+  }
+}
+
+function bomAuditRecord(row: BomLineView, options: BomFormOptions): BomLineRecordForAudit {
+  const version = options.fitVersions.find((item) =>
+    item.collectionCode === row.collectionCode
+    && item.fitName === row.fitName
+    && item.versionCode === row.versionCode
+  )
+  const material = options.materials.find((item) => item.code === row.materialCode)
+
+  return {
+    id: row.id,
+    fit_version_id: version?.id ?? '',
+    piece_name: row.pieceName,
+    material_id: material?.id ?? '',
+    pieces_per_unit: row.piecesPerUnit,
+    consumption_per_piece: row.consumptionPerPiece,
+    waste_percentage: row.wastePercentage,
+    valid_from_month: row.validFromMonth,
+    valid_to_month: row.validToMonth,
+    status: row.status,
+    notes: row.notes,
+  }
+}
+
 export function BomPage() {
   const [bomLines, setBomLines] = useState<BomLineView[]>([])
   const [versionMix, setVersionMix] = useState<VersionMixView[]>([])
+  const [options, setOptions] = useState<BomFormOptions>({
+    collections: [],
+    fits: [],
+    materials: [],
+    fitVersions: [],
+  })
   const [search, setSearch] = useState('')
+  const [drawerMode, setDrawerMode] = useState<DrawerMode>(null)
+  const [versionForm, setVersionForm] = useState<VersionMixFormInput>(emptyVersionForm)
+  const [bomForm, setBomForm] = useState<BomLineFormInput>(emptyBomForm)
+  const [selectedVersion, setSelectedVersion] = useState<VersionMixView | null>(null)
+  const [selectedBomLine, setSelectedBomLine] = useState<BomLineView | null>(null)
+  const [reason, setReason] = useState('')
   const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [feedback, setFeedback] = useState<string | null>(null)
 
   async function loadBom() {
     setIsLoading(true)
     setError(null)
 
     try {
-      const [lines, mix] = await Promise.all([listBomLines(), listVersionMix()])
+      const [lines, mix, formOptions] = await Promise.all([listBomLines(), listVersionMix(), getBomFormOptions()])
       setBomLines(lines)
       setVersionMix(mix)
+      setOptions(formOptions)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No fue posible cargar el BOM.')
     } finally {
@@ -67,6 +227,183 @@ export function BomPage() {
     )
   }, [versionMix, search])
 
+  const mixTotalForCurrentFit = useMemo(() => {
+    if (!versionForm.collection_id || !versionForm.fit_id) return 0
+
+    return versionMix
+      .filter((mix) => {
+        const isSameContext = mix.collectionId === versionForm.collection_id && mix.fitId === versionForm.fit_id
+        const isNotCurrent = drawerMode !== 'version-edit' || mix.id !== selectedVersion?.id
+        return isSameContext && isNotCurrent && mix.status === 'active'
+      })
+      .reduce((sum, mix) => sum + mix.sharePercentage, 0)
+  }, [drawerMode, selectedVersion?.id, versionForm.collection_id, versionForm.fit_id, versionMix])
+
+  const projectedMixTotal = mixTotalForCurrentFit + Number(versionForm.share_percentage || 0)
+
+  function openCreateVersion() {
+    setDrawerMode('version-create')
+    setSelectedVersion(null)
+    setVersionForm({
+      ...emptyVersionForm,
+      collection_id: options.collections[0]?.id ?? '',
+      fit_id: options.fits[0]?.id ?? '',
+      main_material_id: options.materials[0]?.id ?? '',
+    })
+    setReason('Creación de versión y mix porcentual desde BOM')
+    setError(null)
+    setFeedback(null)
+  }
+
+  function openEditVersion(row: VersionMixView) {
+    setDrawerMode('version-edit')
+    setSelectedVersion(row)
+    setVersionForm(versionToForm(row))
+    setReason('Actualización de versión y mix porcentual desde BOM')
+    setError(null)
+    setFeedback(null)
+  }
+
+  function openCreateBomLine() {
+    setDrawerMode('bom-create')
+    setSelectedBomLine(null)
+    setBomForm({
+      ...emptyBomForm,
+      fit_version_id: options.fitVersions[0]?.id ?? '',
+      material_id: options.materials[0]?.id ?? '',
+    })
+    setReason('Creación de pieza BOM')
+    setError(null)
+    setFeedback(null)
+  }
+
+  function openEditBomLine(row: BomLineView) {
+    setDrawerMode('bom-edit')
+    setSelectedBomLine(row)
+    setBomForm(bomToForm(row, options))
+    setReason('Actualización de pieza BOM')
+    setError(null)
+    setFeedback(null)
+  }
+
+  function closeDrawer() {
+    setDrawerMode(null)
+    setSelectedVersion(null)
+    setSelectedBomLine(null)
+    setError(null)
+    setFeedback(null)
+  }
+
+  async function handleVersionSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setIsSaving(true)
+    setError(null)
+
+    try {
+      if (!versionForm.collection_id || !versionForm.fit_id || !versionForm.version_code.trim()) {
+        throw new Error('Colección, FIT y código de versión son obligatorios.')
+      }
+
+      if (!versionForm.valid_from_month) {
+        throw new Error('La vigencia desde es obligatoria.')
+      }
+
+      const share = Number(versionForm.share_percentage)
+      if (Number.isNaN(share) || share < 0 || share > 100) {
+        throw new Error('El porcentaje de participación debe estar entre 0 y 100.')
+      }
+
+      if (!reason.trim()) {
+        throw new Error('El motivo es obligatorio para auditoría.')
+      }
+
+      const normalizedInput = {
+        ...versionForm,
+        valid_from_month: fromMonthInputValue(versionForm.valid_from_month),
+        valid_to_month: fromMonthInputValue(versionForm.valid_to_month),
+      }
+
+      if (drawerMode === 'version-edit' && selectedVersion) {
+        await updateVersionWithMix(
+          selectedVersion.fitVersionId,
+          selectedVersion.id,
+          versionAuditRecord(selectedVersion),
+          mixAuditRecord(selectedVersion),
+          normalizedInput,
+          reason,
+        )
+        setFeedback('Versión y mix actualizados correctamente.')
+      } else {
+        await createVersionWithMix(normalizedInput, reason)
+        setFeedback('Versión y mix creados correctamente.')
+      }
+
+      await loadBom()
+      closeDrawer()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No fue posible guardar la versión.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  async function handleBomSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setIsSaving(true)
+    setError(null)
+
+    try {
+      if (!bomForm.fit_version_id || !bomForm.material_id || !bomForm.piece_name.trim()) {
+        throw new Error('Versión, material y nombre de pieza son obligatorios.')
+      }
+
+      if (!bomForm.valid_from_month) {
+        throw new Error('La vigencia desde es obligatoria.')
+      }
+
+      const pieces = Number(bomForm.pieces_per_unit)
+      const consumption = Number(bomForm.consumption_per_piece)
+      const waste = Number(bomForm.waste_percentage || 0)
+
+      if (Number.isNaN(pieces) || pieces <= 0) {
+        throw new Error('Las piezas por unidad deben ser mayores a 0.')
+      }
+
+      if (Number.isNaN(consumption) || consumption < 0) {
+        throw new Error('El consumo por pieza no puede ser negativo.')
+      }
+
+      if (Number.isNaN(waste) || waste < 0 || waste > 100) {
+        throw new Error('El desperdicio debe estar entre 0 y 100%.')
+      }
+
+      if (!reason.trim()) {
+        throw new Error('El motivo es obligatorio para auditoría.')
+      }
+
+      const normalizedInput = {
+        ...bomForm,
+        valid_from_month: fromMonthInputValue(bomForm.valid_from_month),
+        valid_to_month: fromMonthInputValue(bomForm.valid_to_month),
+      }
+
+      if (drawerMode === 'bom-edit' && selectedBomLine) {
+        await updateBomLine(selectedBomLine.id, bomAuditRecord(selectedBomLine, options), normalizedInput, reason)
+        setFeedback('Pieza BOM actualizada correctamente.')
+      } else {
+        await createBomLine(normalizedInput, reason)
+        setFeedback('Pieza BOM creada correctamente.')
+      }
+
+      await loadBom()
+      closeDrawer()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No fue posible guardar la pieza BOM.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   return (
     <>
       <div className="filter-bar">
@@ -84,9 +421,16 @@ export function BomPage() {
         <button className="btn btn-secondary" type="button" onClick={() => void loadBom()}>
           Recargar
         </button>
+        <button className="btn btn-primary" type="button" onClick={openCreateVersion}>
+          + Versión / mix
+        </button>
+        <button className="btn btn-primary" type="button" onClick={openCreateBomLine}>
+          + Pieza BOM
+        </button>
       </div>
 
       {error ? <div className="auth-alert error" style={{ marginBottom: 16 }}>{error}</div> : null}
+      {feedback ? <div className="auth-alert success" style={{ marginBottom: 16 }}>{feedback}</div> : null}
 
       <TableShell title="Piezas BOM por versión" subtitle="El consumo depende de la versión, no solo del FIT">
         <table>
@@ -103,13 +447,14 @@ export function BomPage() {
               <th>Consumo efectivo/u</th>
               <th>Vigente desde</th>
               <th>Estado</th>
+              <th>Acción</th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={11}>Cargando BOM...</td></tr>
+              <tr><td colSpan={12}>Cargando BOM...</td></tr>
             ) : filteredLines.length === 0 ? (
-              <tr><td colSpan={11}>No hay líneas BOM registradas.</td></tr>
+              <tr><td colSpan={12}>No hay líneas BOM registradas.</td></tr>
             ) : filteredLines.map((line) => (
               <tr key={line.id}>
                 <td>{line.collectionCode}</td>
@@ -123,6 +468,7 @@ export function BomPage() {
                 <td>{formatNumber(line.effectiveConsumptionPerUnit, 4)} {mapUnit(line.materialUnit)}</td>
                 <td>{formatDateMonth(line.validFromMonth)}</td>
                 <td><Badge>{mapStatus(line.status)}</Badge></td>
+                <td><button className="action-btn" type="button" onClick={() => openEditBomLine(line)}>Editar</button></td>
               </tr>
             ))}
           </tbody>
@@ -142,13 +488,14 @@ export function BomPage() {
               <th>Vigente desde</th>
               <th>Motivo</th>
               <th>Estado</th>
+              <th>Acción</th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={9}>Cargando mix de versiones...</td></tr>
+              <tr><td colSpan={10}>Cargando mix de versiones...</td></tr>
             ) : filteredMix.length === 0 ? (
-              <tr><td colSpan={9}>No hay mix porcentual registrado.</td></tr>
+              <tr><td colSpan={10}>No hay mix porcentual registrado.</td></tr>
             ) : filteredMix.map((mix) => (
               <tr key={mix.id}>
                 <td>{mix.collectionCode}</td>
@@ -160,11 +507,212 @@ export function BomPage() {
                 <td>{formatDateMonth(mix.validFromMonth)}</td>
                 <td>{mix.changeReason ?? 'Sin motivo registrado'}</td>
                 <td><Badge>{mapStatus(mix.status)}</Badge></td>
+                <td><button className="action-btn" type="button" onClick={() => openEditVersion(mix)}>Editar</button></td>
               </tr>
             ))}
           </tbody>
         </table>
       </TableShell>
+
+      <Drawer
+        isOpen={drawerMode === 'version-create' || drawerMode === 'version-edit'}
+        title={drawerMode === 'version-edit' ? 'Editar versión y mix' : 'Nueva versión y mix'}
+        subtitle="Color, tela principal, participación y vigencia"
+        onClose={closeDrawer}
+        footer={
+          <>
+            <button className="btn btn-ghost" type="button" onClick={closeDrawer}>Cancelar</button>
+            <button className="btn btn-primary" type="submit" form="version-form" disabled={isSaving}>
+              {isSaving ? 'Guardando...' : 'Guardar versión'}
+            </button>
+          </>
+        }
+      >
+        <form id="version-form" className="drawer-form" onSubmit={handleVersionSubmit}>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Colección</label>
+              <select className="form-control" value={versionForm.collection_id} onChange={(event) => setVersionForm({ ...versionForm, collection_id: event.target.value })}>
+                <option value="">Selecciona...</option>
+                {options.collections.map((collection) => (
+                  <option key={collection.id} value={collection.id}>{collection.code} · {collection.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group">
+              <label>FIT</label>
+              <select className="form-control" value={versionForm.fit_id} onChange={(event) => setVersionForm({ ...versionForm, fit_id: event.target.value })}>
+                <option value="">Selecciona...</option>
+                {options.fits.map((fit) => (
+                  <option key={fit.id} value={fit.id}>{fit.code} · {fit.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="form-row">
+            <div className="form-group">
+              <label>Código versión</label>
+              <input className="form-control" value={versionForm.version_code} onChange={(event) => setVersionForm({ ...versionForm, version_code: event.target.value })} placeholder="V1" />
+            </div>
+            <div className="form-group">
+              <label>Estado</label>
+              <select className="form-control" value={versionForm.status} onChange={(event) => setVersionForm({ ...versionForm, status: event.target.value as VersionMixFormInput['status'] })}>
+                <option value="active">Activo</option>
+                <option value="inactive">Inactivo</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Descripción</label>
+            <input className="form-control" value={versionForm.description} onChange={(event) => setVersionForm({ ...versionForm, description: event.target.value })} placeholder="Versión Denim azul rango 940-942" />
+          </div>
+
+          <div className="form-row">
+            <div className="form-group">
+              <label>Rango color inicio</label>
+              <input className="form-control" type="number" value={versionForm.color_range_start} onChange={(event) => setVersionForm({ ...versionForm, color_range_start: event.target.value })} placeholder="940" />
+            </div>
+            <div className="form-group">
+              <label>Rango color fin</label>
+              <input className="form-control" type="number" value={versionForm.color_range_end} onChange={(event) => setVersionForm({ ...versionForm, color_range_end: event.target.value })} placeholder="942" />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Tela / material principal</label>
+            <select className="form-control" value={versionForm.main_material_id} onChange={(event) => setVersionForm({ ...versionForm, main_material_id: event.target.value })}>
+              <option value="">No definido</option>
+              {options.materials.map((material) => (
+                <option key={material.id} value={material.id}>{material.code} · {material.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-row">
+            <div className="form-group">
+              <label>Participación %</label>
+              <input className="form-control" type="number" min="0" max="100" step="0.01" value={versionForm.share_percentage} onChange={(event) => setVersionForm({ ...versionForm, share_percentage: event.target.value })} placeholder="60" />
+            </div>
+            <div className="form-group">
+              <label>Vigente desde</label>
+              <input className="form-control" type="month" value={versionForm.valid_from_month} onChange={(event) => setVersionForm({ ...versionForm, valid_from_month: event.target.value })} />
+            </div>
+          </div>
+
+          <div className="form-row">
+            <div className="form-group">
+              <label>Vigente hasta</label>
+              <input className="form-control" type="month" value={versionForm.valid_to_month} onChange={(event) => setVersionForm({ ...versionForm, valid_to_month: event.target.value })} />
+            </div>
+            <div className="form-group">
+              <label>Total mix estimado</label>
+              <div className={`composition-total ${Math.round(projectedMixTotal * 100) / 100 === 100 ? 'ok' : 'warn'}`}>
+                {projectedMixTotal.toLocaleString('es-CO')}%
+              </div>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Motivo del cambio de mix</label>
+            <textarea className="form-control textarea-control" value={versionForm.change_reason} onChange={(event) => setVersionForm({ ...versionForm, change_reason: event.target.value })} placeholder="Mix inicial, cierre de colección, cambio comercial..." />
+          </div>
+
+          <div className="form-group">
+            <label>Motivo auditoría</label>
+            <textarea className="form-control textarea-control" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Explica por qué se crea o modifica esta versión." />
+          </div>
+        </form>
+      </Drawer>
+
+      <Drawer
+        isOpen={drawerMode === 'bom-create' || drawerMode === 'bom-edit'}
+        title={drawerMode === 'bom-edit' ? 'Editar pieza BOM' : 'Nueva pieza BOM'}
+        subtitle="Base, bolsillo, botón, marquilla, cremallera, empaque u otro componente"
+        onClose={closeDrawer}
+        footer={
+          <>
+            <button className="btn btn-ghost" type="button" onClick={closeDrawer}>Cancelar</button>
+            <button className="btn btn-primary" type="submit" form="bom-form" disabled={isSaving}>
+              {isSaving ? 'Guardando...' : 'Guardar pieza'}
+            </button>
+          </>
+        }
+      >
+        <form id="bom-form" className="drawer-form" onSubmit={handleBomSubmit}>
+          <div className="form-group">
+            <label>Versión del FIT</label>
+            <select className="form-control" value={bomForm.fit_version_id} onChange={(event) => setBomForm({ ...bomForm, fit_version_id: event.target.value })}>
+              <option value="">Selecciona...</option>
+              {options.fitVersions.map((version) => (
+                <option key={version.id} value={version.id}>{version.collectionCode} · {version.fitName} · {version.versionCode}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-row">
+            <div className="form-group">
+              <label>Nombre pieza</label>
+              <input className="form-control" value={bomForm.piece_name} onChange={(event) => setBomForm({ ...bomForm, piece_name: event.target.value })} placeholder="Base, bolsillo, botón..." />
+            </div>
+            <div className="form-group">
+              <label>Estado</label>
+              <select className="form-control" value={bomForm.status} onChange={(event) => setBomForm({ ...bomForm, status: event.target.value as BomLineFormInput['status'] })}>
+                <option value="active">Activo</option>
+                <option value="inactive">Inactivo</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Material</label>
+            <select className="form-control" value={bomForm.material_id} onChange={(event) => setBomForm({ ...bomForm, material_id: event.target.value })}>
+              <option value="">Selecciona...</option>
+              {options.materials.map((material) => (
+                <option key={material.id} value={material.id}>{material.code} · {material.name} · {mapUnit(material.unit)}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-row">
+            <div className="form-group">
+              <label>Piezas por unidad</label>
+              <input className="form-control" type="number" min="0.0001" step="0.0001" value={bomForm.pieces_per_unit} onChange={(event) => setBomForm({ ...bomForm, pieces_per_unit: event.target.value })} placeholder="1" />
+            </div>
+            <div className="form-group">
+              <label>Consumo por pieza</label>
+              <input className="form-control" type="number" min="0" step="0.0001" value={bomForm.consumption_per_piece} onChange={(event) => setBomForm({ ...bomForm, consumption_per_piece: event.target.value })} placeholder="1.20" />
+            </div>
+          </div>
+
+          <div className="form-row">
+            <div className="form-group">
+              <label>Desperdicio %</label>
+              <input className="form-control" type="number" min="0" max="100" step="0.01" value={bomForm.waste_percentage} onChange={(event) => setBomForm({ ...bomForm, waste_percentage: event.target.value })} placeholder="3" />
+            </div>
+            <div className="form-group">
+              <label>Vigente desde</label>
+              <input className="form-control" type="month" value={bomForm.valid_from_month} onChange={(event) => setBomForm({ ...bomForm, valid_from_month: event.target.value })} />
+            </div>
+          </div>
+
+          <div className="form-group">
+            <label>Vigente hasta</label>
+            <input className="form-control" type="month" value={bomForm.valid_to_month} onChange={(event) => setBomForm({ ...bomForm, valid_to_month: event.target.value })} />
+          </div>
+
+          <div className="form-group">
+            <label>Notas</label>
+            <textarea className="form-control textarea-control" value={bomForm.notes} onChange={(event) => setBomForm({ ...bomForm, notes: event.target.value })} placeholder="Detalle técnico o comentario del consumo." />
+          </div>
+
+          <div className="form-group">
+            <label>Motivo auditoría</label>
+            <textarea className="form-control textarea-control" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Explica por qué se crea o modifica esta pieza BOM." />
+          </div>
+        </form>
+      </Drawer>
     </>
   )
 }
