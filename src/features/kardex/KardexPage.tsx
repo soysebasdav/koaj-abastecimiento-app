@@ -5,35 +5,26 @@ import { KpiCard } from '../../components/KpiCard'
 import { TableShell } from '../../components/TableShell'
 import { formatDate, formatDateMonth, formatNumber, formatQuantity } from '../../utils/format'
 import {
-  createControlDate,
   createKardexInput,
   getKardexOptions,
-  listControlDates,
   listKardexInputs,
-  toMonthInputValue,
-  updateControlDate,
   updateKardexInput,
 } from './kardexService'
 import type {
-  ControlDateFormInput,
-  ControlDateRecordForAudit,
   KardexInputFormInput,
   KardexInputRecordForAudit,
   KardexInputView,
   KardexOptions,
-  MaterialControlDateView,
 } from './kardexTypes'
 
-type DrawerMode = 'control-create' | 'control-edit' | 'input-create' | 'input-edit' | null
+type DrawerMode = 'input-create' | 'input-edit' | null
 
-const emptyControlDateForm: ControlDateFormInput = {
-  material_id: '',
-  period_month: '',
-  control_date: '',
-  sequence_number: '1',
+type KardexDisplayRow = KardexInputView & {
+  isRegistered: boolean
 }
 
 const emptyKardexInputForm: KardexInputFormInput = {
+  material_type: '',
   material_id: '',
   control_date_id: '',
   total_bodega: '0',
@@ -44,27 +35,9 @@ const emptyKardexInputForm: KardexInputFormInput = {
   notes: '',
 }
 
-function controlDateToForm(row: MaterialControlDateView): ControlDateFormInput {
-  return {
-    material_id: row.materialId,
-    period_month: toMonthInputValue(row.periodMonth),
-    control_date: row.controlDate,
-    sequence_number: String(row.sequenceNumber),
-  }
-}
-
-function controlDateAuditRecord(row: MaterialControlDateView): ControlDateRecordForAudit {
-  return {
-    id: row.id,
-    material_id: row.materialId,
-    period_month: row.periodMonth,
-    control_date: row.controlDate,
-    sequence_number: row.sequenceNumber,
-  }
-}
-
 function kardexToForm(row: KardexInputView): KardexInputFormInput {
   return {
+    material_type: row.materialType,
     material_id: row.materialId,
     control_date_id: row.controlDateId,
     total_bodega: String(row.totalBodega),
@@ -80,7 +53,8 @@ function kardexAuditRecord(row: KardexInputView): KardexInputRecordForAudit {
   return {
     id: row.id,
     material_id: row.materialId,
-    control_date_id: row.controlDateId,
+    material_type: row.materialType,
+    material_type_control_date_id: row.controlDateId,
     total_bodega: row.totalBodega,
     pedido: row.pedido,
     transito: row.transito,
@@ -92,16 +66,18 @@ function kardexAuditRecord(row: KardexInputView): KardexInputRecordForAudit {
 
 export function KardexPage() {
   const [rows, setRows] = useState<KardexInputView[]>([])
-  const [controlDates, setControlDates] = useState<MaterialControlDateView[]>([])
   const [options, setOptions] = useState<KardexOptions>({
+    materialTypes: [],
     materials: [],
-    controlDates: [],
+    controlPoints: [],
+    requirements: [],
   })
+  const [selectedMaterialType, setSelectedMaterialType] = useState('')
+  const [selectedControlPointId, setSelectedControlPointId] = useState('')
+  const [selectedMaterial, setSelectedMaterial] = useState('all')
   const [search, setSearch] = useState('')
   const [drawerMode, setDrawerMode] = useState<DrawerMode>(null)
-  const [selectedControlDate, setSelectedControlDate] = useState<MaterialControlDateView | null>(null)
   const [selectedKardexInput, setSelectedKardexInput] = useState<KardexInputView | null>(null)
-  const [controlDateForm, setControlDateForm] = useState<ControlDateFormInput>(emptyControlDateForm)
   const [kardexForm, setKardexForm] = useState<KardexInputFormInput>(emptyKardexInputForm)
   const [reason, setReason] = useState('')
   const [isLoading, setIsLoading] = useState(true)
@@ -114,18 +90,13 @@ export function KardexPage() {
     setError(null)
 
     try {
-      const [inputRows, controlDateRows, kardexOptions] = await Promise.all([
+      const [inputRows, kardexOptions] = await Promise.all([
         listKardexInputs(),
-        listControlDates(),
         getKardexOptions(),
       ])
 
       setRows(inputRows)
-      setControlDates(controlDateRows)
-      setOptions({
-        ...kardexOptions,
-        controlDates: controlDateRows,
-      })
+      setOptions(kardexOptions)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No fue posible cargar el Kardex.')
     } finally {
@@ -137,41 +108,128 @@ export function KardexPage() {
     void loadKardex()
   }, [])
 
-  const filteredRows = useMemo(() => {
+  useEffect(() => {
+    if (!selectedMaterialType && options.materialTypes.length > 0) {
+      setSelectedMaterialType(options.materialTypes[0].materialType)
+    }
+  }, [options.materialTypes, selectedMaterialType])
+
+  useEffect(() => {
+    if (!selectedMaterialType) {
+      setSelectedControlPointId('')
+      return
+    }
+
+    const controlPointsForType = options.controlPoints.filter((point) => point.materialType === selectedMaterialType)
+    if (controlPointsForType.length === 0) {
+      setSelectedControlPointId('')
+      return
+    }
+
+    if (!controlPointsForType.some((point) => point.id === selectedControlPointId)) {
+      setSelectedControlPointId(controlPointsForType[0].id)
+    }
+  }, [options.controlPoints, selectedControlPointId, selectedMaterialType])
+
+  const selectedTypeOption = options.materialTypes.find((type) => type.materialType === selectedMaterialType)
+
+  const visibleMaterials = useMemo(() => {
+    if (!selectedMaterialType) return options.materials
+    return options.materials.filter((material) => material.materialType === selectedMaterialType)
+  }, [options.materials, selectedMaterialType])
+
+  const visibleControlPoints = useMemo(() => {
+    if (!selectedMaterialType) return options.controlPoints
+    return options.controlPoints.filter((point) => point.materialType === selectedMaterialType)
+  }, [options.controlPoints, selectedMaterialType])
+
+  const selectedControlPoint = useMemo(() => {
+    return visibleControlPoints.find((point) => point.id === selectedControlPointId) ?? visibleControlPoints[0] ?? null
+  }, [selectedControlPointId, visibleControlPoints])
+
+  const inputRowsByMaterial = useMemo(() => {
+    return rows.reduce<Record<string, KardexInputView>>((acc, row) => {
+      if (selectedControlPoint && row.controlDateId === selectedControlPoint.id) {
+        acc[row.materialId] = row
+      }
+      return acc
+    }, {})
+  }, [rows, selectedControlPoint])
+
+  const requirementByMaterial = useMemo(() => {
+    return options.requirements.reduce<Record<string, number>>((acc, row) => {
+      if (selectedControlPoint && row.controlDateId === selectedControlPoint.id) {
+        acc[row.materialId] = row.requiredQuantity
+      }
+      return acc
+    }, {})
+  }, [options.requirements, selectedControlPoint])
+
+  const kardexDetailRows = useMemo<KardexDisplayRow[]>(() => {
+    if (!selectedControlPoint) return []
+
     const query = search.trim().toLowerCase()
-    if (!query) return rows
 
-    return rows.filter((row) =>
-      [
-        row.materialCode,
-        row.materialName,
-        row.periodMonth,
-        row.controlDate,
-        row.notes ?? '',
-      ].join(' ').toLowerCase().includes(query),
-    )
-  }, [rows, search])
+    return visibleMaterials
+      .filter((material) => selectedMaterial === 'all' || material.id === selectedMaterial)
+      .filter((material) => !query || [
+        material.code,
+        material.name,
+        material.materialTypeLabel,
+        selectedControlPoint.controlLabel,
+        selectedControlPoint.controlDate,
+      ].join(' ').toLowerCase().includes(query))
+      .map((material) => {
+        const savedInput = inputRowsByMaterial[material.id]
+        if (savedInput) {
+          return { ...savedInput, isRegistered: true }
+        }
 
-  const filteredControlDates = useMemo(() => {
-    const query = search.trim().toLowerCase()
-    if (!query) return controlDates
+        const projectedConsumption = requirementByMaterial[material.id] ?? 0
+        const operationalRequirement = projectedConsumption
+        const pendientePorPedir = Math.max(operationalRequirement, 0)
 
-    return controlDates.filter((row) =>
-      [
-        row.materialCode,
-        row.materialName,
-        row.periodMonth,
-        row.controlDate,
-        row.sequenceNumber,
-      ].join(' ').toLowerCase().includes(query),
-    )
-  }, [controlDates, search])
+        return {
+          id: `virtual-${selectedControlPoint.id}-${material.id}`,
+          materialId: material.id,
+          materialCode: material.code,
+          materialName: material.name,
+          materialType: material.materialType,
+          materialTypeLabel: material.materialTypeLabel,
+          unit: material.unit,
+          controlDateId: selectedControlPoint.id,
+          periodMonth: selectedControlPoint.periodMonth,
+          controlDate: selectedControlPoint.controlDate,
+          controlNumber: selectedControlPoint.controlNumber,
+          controlLabel: selectedControlPoint.controlLabel,
+          totalBodega: 0,
+          pedido: 0,
+          transito: 0,
+          stockSeguridad: 0,
+          industrializacion: 0,
+          projectedConsumption,
+          entregaProduccion: 0,
+          operationalRequirement,
+          pendientePorPedir,
+          inventarioFinal: -projectedConsumption,
+          availableBalance: -operationalRequirement,
+          notes: null,
+          isRegistered: false,
+        }
+      })
+  }, [inputRowsByMaterial, requirementByMaterial, search, selectedControlPoint, selectedMaterial, visibleMaterials])
 
-  const controlDatesForSelectedMaterial = useMemo(() => {
-    if (!kardexForm.material_id) return options.controlDates
-
-    return options.controlDates.filter((row) => row.materialId === kardexForm.material_id)
-  }, [kardexForm.material_id, options.controlDates])
+  const totalBodega = kardexDetailRows.reduce((sum, row) => sum + row.totalBodega, 0)
+  const totalPedido = kardexDetailRows.reduce((sum, row) => sum + row.pedido, 0)
+  const totalTransito = kardexDetailRows.reduce((sum, row) => sum + row.transito, 0)
+  const totalStockSeguridad = kardexDetailRows.reduce((sum, row) => sum + row.stockSeguridad, 0)
+  const totalIndustrializacion = kardexDetailRows.reduce((sum, row) => sum + row.industrializacion, 0)
+  const totalDisponible = kardexDetailRows.reduce((sum, row) => sum + row.availableBalance, 0)
+  const totalConsumoProyectado = kardexDetailRows.reduce((sum, row) => sum + row.projectedConsumption, 0)
+  const totalEntregaProduccion = kardexDetailRows.reduce((sum, row) => sum + row.entregaProduccion, 0)
+  const totalPendiente = kardexDetailRows.reduce((sum, row) => sum + row.pendientePorPedir, 0)
+  const totalInventarioFinal = kardexDetailRows.reduce((sum, row) => sum + row.inventarioFinal, 0)
+  const registeredRowsCount = kardexDetailRows.filter((row) => row.isRegistered).length
 
   const availableBalancePreview = useMemo(() => {
     return (
@@ -183,41 +241,26 @@ export function KardexPage() {
     )
   }, [kardexForm])
 
-  const totalBodega = filteredRows.reduce((sum, row) => sum + row.totalBodega, 0)
-  const totalPedido = filteredRows.reduce((sum, row) => sum + row.pedido, 0)
-  const totalTransito = filteredRows.reduce((sum, row) => sum + row.transito, 0)
-  const totalDisponible = filteredRows.reduce((sum, row) => sum + row.availableBalance, 0)
-
-  function openCreateControlDate() {
-    setDrawerMode('control-create')
-    setSelectedControlDate(null)
-    setControlDateForm({
-      ...emptyControlDateForm,
-      material_id: options.materials[0]?.id ?? '',
-    })
-    setReason('Creación de fecha de control Kardex')
-    setError(null)
-    setFeedback(null)
+  function handleMaterialTypeChange(materialType: string) {
+    setSelectedMaterialType(materialType)
+    setSelectedMaterial('all')
+    setSelectedControlPointId('')
   }
 
-  function openEditControlDate(row: MaterialControlDateView) {
-    setDrawerMode('control-edit')
-    setSelectedControlDate(row)
-    setControlDateForm(controlDateToForm(row))
-    setReason('Actualización de fecha de control Kardex')
-    setError(null)
-    setFeedback(null)
-  }
+  function openCreateInput(materialId?: string, controlDateId?: string) {
+    const materialType = selectedMaterialType || (options.materialTypes[0]?.materialType ?? '')
+    const firstMaterial = options.materials.find((material) => material.materialType === materialType)
+    const firstControlPoint = selectedControlPoint ?? options.controlPoints.find((point) => point.materialType === materialType)
 
-  function openCreateInput(controlDate?: MaterialControlDateView) {
     setDrawerMode('input-create')
     setSelectedKardexInput(null)
     setKardexForm({
       ...emptyKardexInputForm,
-      material_id: controlDate?.materialId ?? options.materials[0]?.id ?? '',
-      control_date_id: controlDate?.id ?? '',
+      material_type: materialType,
+      material_id: materialId ?? firstMaterial?.id ?? '',
+      control_date_id: controlDateId ?? firstControlPoint?.id ?? '',
     })
-    setReason('Registro de input Kardex')
+    setReason('Registro de input Kardex por tipo de material')
     setError(null)
     setFeedback(null)
   }
@@ -226,46 +269,15 @@ export function KardexPage() {
     setDrawerMode('input-edit')
     setSelectedKardexInput(row)
     setKardexForm(kardexToForm(row))
-    setReason('Actualización de input Kardex')
+    setReason('Actualización de input Kardex por tipo de material')
     setError(null)
     setFeedback(null)
   }
 
   function closeDrawer() {
     setDrawerMode(null)
-    setSelectedControlDate(null)
     setSelectedKardexInput(null)
     setError(null)
-    setFeedback(null)
-  }
-
-  async function handleControlDateSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setIsSaving(true)
-    setError(null)
-
-    try {
-      validateControlDateForm(controlDateForm)
-
-      if (!reason.trim()) {
-        throw new Error('El motivo de auditoría es obligatorio.')
-      }
-
-      if (drawerMode === 'control-edit' && selectedControlDate) {
-        await updateControlDate(selectedControlDate.id, controlDateAuditRecord(selectedControlDate), controlDateForm, reason)
-        setFeedback('Fecha de control actualizada correctamente.')
-      } else {
-        await createControlDate(controlDateForm, reason)
-        setFeedback('Fecha de control creada correctamente.')
-      }
-
-      await loadKardex()
-      closeDrawer()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'No fue posible guardar la fecha de control.')
-    } finally {
-      setIsSaving(false)
-    }
   }
 
   async function handleKardexSubmit(event: FormEvent<HTMLFormElement>) {
@@ -297,54 +309,154 @@ export function KardexPage() {
     }
   }
 
+  function handleDrawerMaterialTypeChange(materialType: string) {
+    const firstMaterial = options.materials.find((material) => material.materialType === materialType)
+    const firstControlPoint = options.controlPoints.find((point) => point.materialType === materialType)
+
+    setKardexForm({
+      ...kardexForm,
+      material_type: materialType,
+      material_id: firstMaterial?.id ?? '',
+      control_date_id: firstControlPoint?.id ?? '',
+    })
+  }
+
+  const drawerMaterials = options.materials.filter((material) => material.materialType === kardexForm.material_type)
+  const drawerControlPoints = options.controlPoints.filter((point) => point.materialType === kardexForm.material_type)
+
   return (
     <>
-      <div className="filter-bar">
-        <span className="filter-label">Kardex real:</span>
-        <button className="filter-chip active" type="button">Supabase conectado</button>
-        <button className="filter-chip" type="button">{filteredControlDates.length} fechas</button>
-        <button className="filter-chip" type="button">{filteredRows.length} inputs</button>
+      <div className="filter-bar smart-filter">
+        <span className="filter-label">Kardex</span>
+        <select className="filter-select" value={selectedMaterialType} onChange={(event) => handleMaterialTypeChange(event.target.value)}>
+          <option value="">Selecciona tipo...</option>
+          {options.materialTypes.map((type) => (
+            <option key={type.materialType} value={type.materialType}>{type.label} · {type.materialCount} materiales</option>
+          ))}
+        </select>
+        <select className="filter-select" value={selectedControlPoint?.id ?? ''} onChange={(event) => setSelectedControlPointId(event.target.value)} disabled={!visibleControlPoints.length}>
+          <option value="">Selecciona control...</option>
+          {visibleControlPoints.map((point) => (
+            <option key={point.id} value={point.id}>Control {point.controlNumber} · {formatDate(point.controlDate)}</option>
+          ))}
+        </select>
+        <select className="filter-select" value={selectedMaterial} onChange={(event) => setSelectedMaterial(event.target.value)}>
+          <option value="all">Todos los materiales del tipo</option>
+          {visibleMaterials.map((material) => (
+            <option key={material.id} value={material.id}>{material.code} · {material.name}</option>
+          ))}
+        </select>
         <input
           className="search-input"
-          placeholder="Buscar material o fecha..."
+          placeholder="Buscar material, fecha o fecha de control..."
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          style={{ marginLeft: 'auto' }}
         />
-        <button className="btn btn-secondary" type="button" onClick={() => void loadKardex()}>
-          Recargar
-        </button>
-        <button className="btn btn-primary" type="button" onClick={openCreateControlDate}>
-          + Fecha control
-        </button>
-        <button className="btn btn-primary" type="button" onClick={() => openCreateInput()}>
-          + Input Kardex
-        </button>
+        <button className="btn btn-secondary" type="button" onClick={() => void loadKardex()}>Recargar</button>
+        <button className="btn btn-primary" type="button" onClick={() => openCreateInput()}>+ Input Kardex</button>
       </div>
 
       {error ? <div className="auth-alert error" style={{ marginBottom: 16 }}>{error}</div> : null}
       {feedback ? <div className="auth-alert success" style={{ marginBottom: 16 }}>{feedback}</div> : null}
 
-      <div className="kpi-row compact">
-        <KpiCard label="Total bodega" value={formatNumber(totalBodega, 2)} sub="inputs filtrados" />
-        <KpiCard label="Pedido" value={formatNumber(totalPedido, 2)} sub="ordenado / pedido" />
-        <KpiCard label="Tránsito" value={formatNumber(totalTransito, 2)} sub="en camino" />
-        <KpiCard label="Balance disponible" value={formatNumber(totalDisponible, 2)} sub="bodega + pedido + tránsito - reservas" />
+      <div className="planning-note">
+        <strong>Fechas desde GANTT:</strong> aquí no se crean fechas. El Kardex toma las fechas de control configuradas en GANTT y los aplica a todos los materiales del tipo seleccionado.
       </div>
 
-      <TableShell title="Inputs Kardex por fecha de control" subtitle="Registro operativo por material y corte semanal">
+      <div className="kardex-control-summary">
+        <div className="summary-item">
+          <span>Tipo</span>
+          <strong>{selectedTypeOption?.label ?? 'Sin tipo seleccionado'}</strong>
+        </div>
+        <div className="summary-item">
+          <span>Control</span>
+          <strong>{selectedControlPoint ? `Control ${selectedControlPoint.controlNumber}` : 'Sin control'}</strong>
+        </div>
+        <div className="summary-item">
+          <span>Fecha</span>
+          <strong>{selectedControlPoint ? formatDate(selectedControlPoint.controlDate) : '-'}</strong>
+        </div>
+        <div className="summary-item">
+          <span>Materiales cubiertos</span>
+          <strong>{kardexDetailRows.length} materiales</strong>
+        </div>
+        <div className="summary-item">
+          <span>Registros Kardex</span>
+          <strong>{registeredRowsCount}/{kardexDetailRows.length}</strong>
+        </div>
+      </div>
+
+      <div className="kpi-row compact">
+        <KpiCard label="Total bodega" value={formatNumber(totalBodega, 2)} sub="materiales filtrados" />
+        <KpiCard label="Consumo proyectado" value={formatNumber(totalConsumoProyectado, 2)} sub="desde BOM + control" />
+        <KpiCard label="Tránsito" value={formatNumber(totalTransito, 2)} sub="suma del tipo" />
+        <KpiCard label="Pendiente por pedir" value={formatNumber(totalPendiente, 2)} sub="faltante operativo" />
+      </div>
+
+      <TableShell title="Resumen Kardex del tipo" subtitle="Suma de todos los materiales cubiertos por la fecha de control seleccionada">
         <table>
           <thead>
             <tr>
-              <th>Mes</th>
+              <th>Tipo</th>
+              <th>Control</th>
               <th>Fecha control</th>
-              <th>Secuencia</th>
-              <th>Material</th>
               <th>Total bodega</th>
               <th>Pedido</th>
               <th>Tránsito</th>
               <th>Stock seguridad</th>
               <th>Industrialización</th>
+              <th>Consumo proyectado</th>
+              <th>Entrega producción</th>
+              <th>Pendiente por pedir</th>
+              <th>Inventario final</th>
+              <th>Balance disponible</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            {isLoading ? (
+              <tr><td colSpan={14}>Cargando Kardex...</td></tr>
+            ) : !selectedControlPoint ? (
+              <tr><td colSpan={14}>Selecciona un tipo de material con fecha de control disponible.</td></tr>
+            ) : (
+              <tr className="kardex-total-row">
+                <td>{selectedTypeOption?.label ?? selectedMaterialType}</td>
+                <td>Control {selectedControlPoint.controlNumber} · {selectedControlPoint.controlLabel}</td>
+                <td>{formatDate(selectedControlPoint.controlDate)}</td>
+                <td>{formatQuantity(totalBodega, selectedTypeOption?.unit ?? '')}</td>
+                <td>{formatQuantity(totalPedido, selectedTypeOption?.unit ?? '')}</td>
+                <td>{formatQuantity(totalTransito, selectedTypeOption?.unit ?? '')}</td>
+                <td>{formatQuantity(totalStockSeguridad, selectedTypeOption?.unit ?? '')}</td>
+                <td>{formatQuantity(totalIndustrializacion, selectedTypeOption?.unit ?? '')}</td>
+                <td>{formatQuantity(totalConsumoProyectado, selectedTypeOption?.unit ?? '')}</td>
+                <td>{formatQuantity(totalEntregaProduccion, selectedTypeOption?.unit ?? '')}</td>
+                <td>{formatQuantity(totalPendiente, selectedTypeOption?.unit ?? '')}</td>
+                <td>{formatQuantity(totalInventarioFinal, selectedTypeOption?.unit ?? '')}</td>
+                <td>{formatQuantity(totalDisponible, selectedTypeOption?.unit ?? '')}</td>
+                <td><Badge>{registeredRowsCount === 0 ? 'Sin registrar' : totalDisponible < 0 ? 'Faltante' : 'Activo'}</Badge></td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </TableShell>
+
+      <TableShell title="Detalle Kardex por material" subtitle="Todos los materiales del tipo seleccionado comparten la misma fecha de control">
+        <table>
+          <thead>
+            <tr>
+              <th>Material</th>
+              <th>Tipo</th>
+              <th>Control</th>
+              <th>Fecha control</th>
+              <th>Total bodega</th>
+              <th>Pedido</th>
+              <th>Tránsito</th>
+              <th>Stock seguridad</th>
+              <th>Industrialización</th>
+              <th>Consumo proyectado</th>
+              <th>Entrega producción</th>
+              <th>Pendiente por pedir</th>
+              <th>Inventario final</th>
               <th>Balance disponible</th>
               <th>Notas</th>
               <th>Estado</th>
@@ -353,124 +465,46 @@ export function KardexPage() {
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={13}>Cargando Kardex...</td></tr>
-            ) : filteredRows.length === 0 ? (
-              <tr><td colSpan={13}>No hay registros de Kardex. Primero crea fechas de control y luego carga inputs.</td></tr>
-            ) : filteredRows.map((row) => (
+              <tr><td colSpan={17}>Cargando Kardex...</td></tr>
+            ) : !selectedControlPoint ? (
+              <tr><td colSpan={17}>No hay fecha de control para el tipo seleccionado. Créala primero en GANTT.</td></tr>
+            ) : kardexDetailRows.length === 0 ? (
+              <tr><td colSpan={17}>No hay materiales para el tipo y filtros seleccionados.</td></tr>
+            ) : kardexDetailRows.map((row) => (
               <tr key={row.id}>
-                <td>{formatDateMonth(row.periodMonth)}</td>
+                <td>{row.materialCode} · {row.materialName}</td>
+                <td>{row.materialTypeLabel}</td>
+                <td>Control {row.controlNumber}</td>
                 <td>{formatDate(row.controlDate)}</td>
-                <td>{row.sequenceNumber}</td>
-                <td>{row.materialName}</td>
                 <td>{formatQuantity(row.totalBodega, row.unit)}</td>
                 <td>{formatQuantity(row.pedido, row.unit)}</td>
                 <td>{formatQuantity(row.transito, row.unit)}</td>
                 <td>{formatQuantity(row.stockSeguridad, row.unit)}</td>
                 <td>{formatQuantity(row.industrializacion, row.unit)}</td>
+                <td>{formatQuantity(row.projectedConsumption, row.unit)}</td>
+                <td>{formatQuantity(row.entregaProduccion, row.unit)}</td>
+                <td>{formatQuantity(row.pendientePorPedir, row.unit)}</td>
+                <td>{formatQuantity(row.inventarioFinal, row.unit)}</td>
                 <td>{formatQuantity(row.availableBalance, row.unit)}</td>
-                <td>{row.notes ?? 'Sin notas'}</td>
-                <td><Badge>{row.availableBalance < 0 ? 'Crítico' : 'Calculado'}</Badge></td>
-                <td><button className="action-btn" type="button" onClick={() => openEditInput(row)}>Editar</button></td>
+                <td>{row.notes ?? '-'}</td>
+                <td><Badge>{row.isRegistered ? (row.availableBalance < 0 ? 'Faltante' : 'Activo') : 'Sin registrar'}</Badge></td>
+                <td>
+                  {row.isRegistered ? (
+                    <button className="action-btn" type="button" onClick={() => openEditInput(row)}>Editar</button>
+                  ) : (
+                    <button className="action-btn" type="button" onClick={() => openCreateInput(row.materialId, row.controlDateId)}>Registrar</button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </TableShell>
 
-      <TableShell title="Fechas de control por material" subtitle="Cada material puede tener hasta cuatro o más cortes por mes según operación">
-        <table>
-          <thead>
-            <tr>
-              <th>Material</th>
-              <th>Mes</th>
-              <th>Fecha control</th>
-              <th>Secuencia</th>
-              <th>Unidad</th>
-              <th>Input</th>
-              <th>Acción</th>
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading ? (
-              <tr><td colSpan={7}>Cargando fechas de control...</td></tr>
-            ) : filteredControlDates.length === 0 ? (
-              <tr><td colSpan={7}>No hay fechas de control registradas.</td></tr>
-            ) : filteredControlDates.map((row) => {
-              const hasInput = rows.some((input) => input.controlDateId === row.id)
-
-              return (
-                <tr key={row.id}>
-                  <td>{row.materialName}</td>
-                  <td>{formatDateMonth(row.periodMonth)}</td>
-                  <td>{formatDate(row.controlDate)}</td>
-                  <td>{row.sequenceNumber}</td>
-                  <td>{row.unit}</td>
-                  <td><Badge>{hasInput ? 'Activo' : 'Atención'}</Badge></td>
-                  <td>
-                    <div className="inline-actions">
-                      <button className="action-btn" type="button" onClick={() => openEditControlDate(row)}>Editar fecha</button>
-                      <button className="action-btn" type="button" onClick={() => openCreateInput(row)}>Cargar input</button>
-                    </div>
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </TableShell>
-
-      <Drawer
-        isOpen={drawerMode === 'control-create' || drawerMode === 'control-edit'}
-        title={drawerMode === 'control-edit' ? 'Editar fecha de control' : 'Nueva fecha de control'}
-        subtitle="Define los cortes operativos por material"
-        onClose={closeDrawer}
-        footer={
-          <>
-            <button className="btn btn-ghost" type="button" onClick={closeDrawer}>Cancelar</button>
-            <button className="btn btn-primary" type="submit" form="control-date-form" disabled={isSaving}>
-              {isSaving ? 'Guardando...' : 'Guardar fecha'}
-            </button>
-          </>
-        }
-      >
-        <form id="control-date-form" className="drawer-form" onSubmit={handleControlDateSubmit}>
-          <div className="form-group">
-            <label>Material</label>
-            <select className="form-control" value={controlDateForm.material_id} onChange={(event) => setControlDateForm({ ...controlDateForm, material_id: event.target.value })}>
-              <option value="">Selecciona...</option>
-              {options.materials.map((material) => (
-                <option key={material.id} value={material.id}>{material.code} · {material.name}</option>
-              ))}
-            </select>
-          </div>
-
-          <div className="form-row">
-            <div className="form-group">
-              <label>Mes</label>
-              <input className="form-control" type="month" value={controlDateForm.period_month} onChange={(event) => setControlDateForm({ ...controlDateForm, period_month: event.target.value })} />
-            </div>
-            <div className="form-group">
-              <label>Fecha de control</label>
-              <input className="form-control" type="date" value={controlDateForm.control_date} onChange={(event) => setControlDateForm({ ...controlDateForm, control_date: event.target.value })} />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label>Secuencia del corte</label>
-            <input className="form-control" type="number" min="1" step="1" value={controlDateForm.sequence_number} onChange={(event) => setControlDateForm({ ...controlDateForm, sequence_number: event.target.value })} placeholder="1, 2, 3, 4..." />
-          </div>
-
-          <div className="form-group">
-            <label>Motivo auditoría</label>
-            <textarea className="form-control textarea-control" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Explica por qué se crea o modifica esta fecha de control." />
-          </div>
-        </form>
-      </Drawer>
-
       <Drawer
         isOpen={drawerMode === 'input-create' || drawerMode === 'input-edit'}
         title={drawerMode === 'input-edit' ? 'Editar input Kardex' : 'Nuevo input Kardex'}
-        subtitle="Carga los saldos y reservas del corte"
+        subtitle="Carga saldos para un material dentro del tipo y fecha definidos en GANTT"
         onClose={closeDrawer}
         footer={
           <>
@@ -483,26 +517,32 @@ export function KardexPage() {
       >
         <form id="kardex-input-form" className="drawer-form" onSubmit={handleKardexSubmit}>
           <div className="form-group">
-            <label>Material</label>
-            <select
-              className="form-control"
-              value={kardexForm.material_id}
-              onChange={(event) => setKardexForm({ ...kardexForm, material_id: event.target.value, control_date_id: '' })}
-            >
+            <label>Tipo de material</label>
+            <select className="form-control" value={kardexForm.material_type} onChange={(event) => handleDrawerMaterialTypeChange(event.target.value)}>
               <option value="">Selecciona...</option>
-              {options.materials.map((material) => (
+              {options.materialTypes.map((type) => (
+                <option key={type.materialType} value={type.materialType}>{type.label} · {type.materialCount} materiales</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label>Material</label>
+            <select className="form-control" value={kardexForm.material_id} onChange={(event) => setKardexForm({ ...kardexForm, material_id: event.target.value })}>
+              <option value="">Selecciona...</option>
+              {drawerMaterials.map((material) => (
                 <option key={material.id} value={material.id}>{material.code} · {material.name}</option>
               ))}
             </select>
           </div>
 
           <div className="form-group">
-            <label>Fecha de control</label>
+            <label>Fecha de control Kardex</label>
             <select className="form-control" value={kardexForm.control_date_id} onChange={(event) => setKardexForm({ ...kardexForm, control_date_id: event.target.value })}>
               <option value="">Selecciona...</option>
-              {controlDatesForSelectedMaterial.map((controlDate) => (
-                <option key={controlDate.id} value={controlDate.id}>
-                  {formatDateMonth(controlDate.periodMonth)} · Corte {controlDate.sequenceNumber} · {formatDate(controlDate.controlDate)}
+              {drawerControlPoints.map((point) => (
+                <option key={point.id} value={point.id}>
+                  {formatDateMonth(point.periodMonth)} · Corte {point.controlNumber} · {formatDate(point.controlDate)} · {point.controlLabel}
                 </option>
               ))}
             </select>
@@ -538,12 +578,16 @@ export function KardexPage() {
           <div className="impact-box">
             <div className="impact-title">Balance disponible preliminar</div>
             <div className="impact-row">
-              <span>Fórmula</span>
+              <span>Fórmula base</span>
               <strong>Bodega + Pedido + Tránsito - Seguridad - Industrialización</strong>
             </div>
             <div className="impact-row">
-              <span>Resultado</span>
+              <span>Resultado sin consumo proyectado</span>
               <strong>{formatNumber(availableBalancePreview, 2)}</strong>
+            </div>
+            <div className="impact-row">
+              <span>Nota</span>
+              <strong>Al guardar, Kardex cruza material + fecha de control con la necesidad calculada desde BOM.</strong>
             </div>
           </div>
 
@@ -562,29 +606,9 @@ export function KardexPage() {
   )
 }
 
-function validateControlDateForm(form: ControlDateFormInput) {
-  if (!form.material_id) {
-    throw new Error('El material es obligatorio.')
-  }
-
-  if (!form.period_month) {
-    throw new Error('El mes es obligatorio.')
-  }
-
-  if (!form.control_date) {
-    throw new Error('La fecha de control es obligatoria.')
-  }
-
-  const sequence = Number(form.sequence_number)
-
-  if (Number.isNaN(sequence) || sequence < 1) {
-    throw new Error('La secuencia debe ser un número mayor o igual a 1.')
-  }
-}
-
 function validateKardexForm(form: KardexInputFormInput) {
-  if (!form.material_id || !form.control_date_id) {
-    throw new Error('Material y fecha de control son obligatorios.')
+  if (!form.material_type || !form.material_id || !form.control_date_id) {
+    throw new Error('Tipo de material, material y fecha de control GANTT son obligatorios.')
   }
 
   const numericFields = [
@@ -600,6 +624,10 @@ function validateKardexForm(form: KardexInputFormInput) {
 
     if (Number.isNaN(numberValue)) {
       throw new Error(`${label} debe ser un número válido.`)
+    }
+
+    if (numberValue < 0) {
+      throw new Error(`${label} no puede ser negativo.`)
     }
   }
 }

@@ -8,6 +8,8 @@ import { BomPage } from '../features/bom/BomPage'
 import { ForecastsPage } from '../features/forecasts/ForecastsPage'
 import { SupplyPage } from '../features/supply/SupplyPage'
 import { KardexPage } from '../features/kardex/KardexPage'
+import { GanttPage } from '../features/gantt/GanttPage'
+import { CronogramaPage } from '../features/cronograma/CronogramaPage'
 import { CollectionsPage } from '../features/collections/CollectionsPage'
 import { AuditPage } from '../features/audit/AuditPage'
 
@@ -44,6 +46,8 @@ export function AppLayout({ userEmail, onSignOut }: AppLayoutProps) {
           {activeSection === 'bom' ? <BomPage /> : null}
           {activeSection === 'forecasts' ? <ForecastsPage /> : null}
           {activeSection === 'supply' ? <SupplyPage /> : null}
+          {activeSection === 'gantt' ? <GanttPage /> : null}
+          {activeSection === 'cronograma' ? <CronogramaPage /> : null}
           {activeSection === 'kardex' ? <KardexPage /> : null}
           {activeSection === 'audit' ? <AuditPage /> : null}
         </div>

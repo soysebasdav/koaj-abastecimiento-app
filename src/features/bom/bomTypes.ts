@@ -1,13 +1,19 @@
 export type BomLineView = {
   id: string
+  fitVersionId: string
+  materialId: string
   collectionCode: string
   collectionName: string
   fitCode: string
   fitName: string
+  fitImageUrl: string | null
   versionCode: string
+  versionImageUrl: string | null
   pieceName: string
+  pieceImageUrl: string | null
   materialCode: string
   materialName: string
+  materialType: string
   materialUnit: string
   piecesPerUnit: number
   consumptionPerPiece: number
@@ -27,7 +33,9 @@ export type VersionMixView = {
   fitId: string
   fitCode: string
   fitName: string
+  fitImageUrl: string | null
   versionCode: string
+  versionImageUrl: string | null
   description: string | null
   colorRangeStart: number | null
   colorRangeEnd: number | null
@@ -51,6 +59,9 @@ export type FitOption = {
   id: string
   code: string
   name: string
+  silhouette: string | null
+  category: string | null
+  imageUrl: string | null
 }
 
 export type MaterialOption = {
@@ -63,9 +74,11 @@ export type MaterialOption = {
 
 export type FitVersionOption = {
   id: string
+  fitId: string
   collectionCode: string
   fitName: string
   versionCode: string
+  imageUrl: string | null
 }
 
 export type BomFormOptions = {
@@ -83,6 +96,7 @@ export type VersionMixFormInput = {
   color_range_start: string
   color_range_end: string
   main_material_id: string
+  image_url: string
   share_percentage: string
   valid_from_month: string
   valid_to_month: string
@@ -97,6 +111,7 @@ export type BomLineFormInput = {
   pieces_per_unit: string
   consumption_per_piece: string
   waste_percentage: string
+  image_url: string
   valid_from_month: string
   valid_to_month: string
   status: 'active' | 'inactive'
@@ -112,6 +127,7 @@ export type FitVersionRecordForAudit = {
   color_range_start: number | null
   color_range_end: number | null
   main_material_id: string | null
+  image_url: string | null
   status: 'active' | 'inactive'
 }
 
@@ -132,6 +148,7 @@ export type BomLineRecordForAudit = {
   pieces_per_unit: number
   consumption_per_piece: number
   waste_percentage: number
+  image_url: string | null
   valid_from_month: string
   valid_to_month: string | null
   status: 'active' | 'inactive'

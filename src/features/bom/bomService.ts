@@ -16,7 +16,10 @@ export async function listBomLines(): Promise<BomLineView[]> {
     .from('bom_lines')
     .select(`
       id,
+      fit_version_id,
+      material_id,
       piece_name,
+      image_url,
       pieces_per_unit,
       consumption_per_piece,
       waste_percentage,
@@ -28,17 +31,20 @@ export async function listBomLines(): Promise<BomLineView[]> {
       materials (
         code,
         name,
+        material_type,
         unit
       ),
       fit_versions (
         version_code,
+        image_url,
         collections (
           code,
           name
         ),
         fits (
           code,
-          name
+          name,
+          image_url
         )
       )
     `)
@@ -48,14 +54,20 @@ export async function listBomLines(): Promise<BomLineView[]> {
 
   return ((data ?? []) as any[]).map((row) => ({
     id: row.id,
+    fitVersionId: row.fit_version_id,
+    materialId: row.material_id,
     collectionCode: row.fit_versions?.collections?.code ?? '-',
     collectionName: row.fit_versions?.collections?.name ?? '-',
     fitCode: row.fit_versions?.fits?.code ?? '-',
     fitName: row.fit_versions?.fits?.name ?? '-',
+    fitImageUrl: row.fit_versions?.fits?.image_url ?? null,
     versionCode: row.fit_versions?.version_code ?? '-',
+    versionImageUrl: row.fit_versions?.image_url ?? null,
     pieceName: row.piece_name,
+    pieceImageUrl: row.image_url ?? null,
     materialCode: row.materials?.code ?? '-',
     materialName: row.materials?.name ?? '-',
+    materialType: row.materials?.material_type ?? 'other',
     materialUnit: row.materials?.unit ?? '',
     piecesPerUnit: Number(row.pieces_per_unit ?? 0),
     consumptionPerPiece: Number(row.consumption_per_piece ?? 0),
@@ -82,6 +94,7 @@ export async function listVersionMix(): Promise<VersionMixView[]> {
         collection_id,
         fit_id,
         version_code,
+        image_url,
         description,
         color_range_start,
         color_range_end,
@@ -92,7 +105,8 @@ export async function listVersionMix(): Promise<VersionMixView[]> {
         ),
         fits (
           code,
-          name
+          name,
+          image_url
         ),
         materials (
           name
@@ -116,7 +130,9 @@ export async function listVersionMix(): Promise<VersionMixView[]> {
       fitId: version?.fit_id ?? '',
       fitCode: version?.fits?.code ?? '-',
       fitName: version?.fits?.name ?? '-',
+      fitImageUrl: version?.fits?.image_url ?? null,
       versionCode: version?.version_code ?? '-',
+      versionImageUrl: version?.image_url ?? null,
       description: version?.description ?? null,
       colorRangeStart: start ?? null,
       colorRangeEnd: end ?? null,
@@ -135,13 +151,15 @@ export async function listVersionMix(): Promise<VersionMixView[]> {
 export async function getBomFormOptions(): Promise<BomFormOptions> {
   const [collectionsResult, fitsResult, materialsResult, versionsResult] = await Promise.all([
     supabase.from('collections').select('id, code, name').order('code', { ascending: true }),
-    supabase.from('fits').select('id, code, name').eq('status', 'active').order('code', { ascending: true }),
+    supabase.from('fits').select('id, code, name, silhouette, category, image_url').eq('status', 'active').order('code', { ascending: true }),
     supabase.from('materials').select('id, code, name, unit, material_type').eq('status', 'active').order('code', { ascending: true }),
     supabase
       .from('fit_versions')
       .select(`
         id,
+        fit_id,
         version_code,
+        image_url,
         collections (
           code
         ),
@@ -160,13 +178,22 @@ export async function getBomFormOptions(): Promise<BomFormOptions> {
 
   return {
     collections: collectionsResult.data ?? [],
-    fits: fitsResult.data ?? [],
+    fits: ((fitsResult.data ?? []) as any[]).map((fit) => ({
+      id: fit.id,
+      code: fit.code,
+      name: fit.name,
+      silhouette: fit.silhouette ?? null,
+      category: fit.category ?? null,
+      imageUrl: fit.image_url ?? null,
+    })),
     materials: materialsResult.data ?? [],
     fitVersions: ((versionsResult.data ?? []) as any[]).map((version) => ({
       id: version.id,
+      fitId: version.fit_id,
       collectionCode: version.collections?.code ?? '-',
       fitName: version.fits?.name ?? '-',
       versionCode: version.version_code,
+      imageUrl: version.image_url ?? null,
     })),
   }
 }
@@ -177,7 +204,7 @@ export async function createVersionWithMix(input: VersionMixFormInput, auditReas
   const { data: version, error: versionError } = await supabase
     .from('fit_versions')
     .insert(versionPayload)
-    .select('id, collection_id, fit_id, version_code, description, color_range_start, color_range_end, main_material_id, status')
+    .select('id, collection_id, fit_id, version_code, description, color_range_start, color_range_end, main_material_id, image_url, status')
     .single()
 
   if (versionError) throw new Error(versionError.message)
@@ -238,7 +265,7 @@ export async function updateVersionWithMix(
       updated_at: new Date().toISOString(),
     })
     .eq('id', versionId)
-    .select('id, collection_id, fit_id, version_code, description, color_range_start, color_range_end, main_material_id, status')
+    .select('id, collection_id, fit_id, version_code, description, color_range_start, color_range_end, main_material_id, image_url, status')
     .single()
 
   if (versionError) throw new Error(versionError.message)
@@ -289,7 +316,7 @@ export async function createBomLine(input: BomLineFormInput, auditReason: string
   const { data, error } = await supabase
     .from('bom_lines')
     .insert(payload)
-    .select('id, fit_version_id, piece_name, material_id, pieces_per_unit, consumption_per_piece, waste_percentage, valid_from_month, valid_to_month, status, notes')
+    .select('id, fit_version_id, piece_name, material_id, pieces_per_unit, consumption_per_piece, waste_percentage, image_url, valid_from_month, valid_to_month, status, notes')
     .single()
 
   if (error) throw new Error(error.message)
@@ -325,7 +352,7 @@ export async function updateBomLine(
       updated_at: new Date().toISOString(),
     })
     .eq('id', id)
-    .select('id, fit_version_id, piece_name, material_id, pieces_per_unit, consumption_per_piece, waste_percentage, valid_from_month, valid_to_month, status, notes')
+    .select('id, fit_version_id, piece_name, material_id, pieces_per_unit, consumption_per_piece, waste_percentage, image_url, valid_from_month, valid_to_month, status, notes')
     .single()
 
   if (error) throw new Error(error.message)
@@ -355,6 +382,7 @@ function normalizeVersionPayload(input: VersionMixFormInput) {
     color_range_start: input.color_range_start.trim() ? Number(input.color_range_start) : null,
     color_range_end: input.color_range_end.trim() ? Number(input.color_range_end) : null,
     main_material_id: input.main_material_id || null,
+    image_url: emptyToNull(input.image_url),
     status: input.status,
   }
 }
@@ -377,6 +405,7 @@ function normalizeBomLinePayload(input: BomLineFormInput) {
     pieces_per_unit: Number(input.pieces_per_unit),
     consumption_per_piece: Number(input.consumption_per_piece),
     waste_percentage: Number(input.waste_percentage || 0),
+    image_url: emptyToNull(input.image_url),
     valid_from_month: input.valid_from_month,
     valid_to_month: input.valid_to_month || null,
     status: input.status,

@@ -1,14 +1,21 @@
 import { supabase } from '../../lib/supabase'
 import { createAuditLog } from '../audit/auditService'
+import { formatMaterialTypeLabel } from '../../utils/materialTypes'
 import type {
-  ControlDateFormInput,
-  ControlDateRecordForAudit,
+  KardexControlPointView,
   KardexInputFormInput,
   KardexInputRecordForAudit,
   KardexInputView,
   KardexOptions,
-  MaterialControlDateView,
+  KardexRequirementView,
+  MaterialOption,
+  MaterialTypeOption,
 } from './kardexTypes'
+
+type BaseKardexInputView = Omit<
+  KardexInputView,
+  'projectedConsumption' | 'entregaProduccion' | 'operationalRequirement' | 'pendientePorPedir' | 'inventarioFinal' | 'availableBalance'
+>
 
 export async function listKardexInputs(): Promise<KardexInputView[]> {
   const { data, error } = await supabase
@@ -16,7 +23,7 @@ export async function listKardexInputs(): Promise<KardexInputView[]> {
     .select(`
       id,
       material_id,
-      control_date_id,
+      material_type_control_date_id,
       total_bodega,
       pedido,
       transito,
@@ -26,145 +33,78 @@ export async function listKardexInputs(): Promise<KardexInputView[]> {
       materials (
         code,
         name,
+        material_type,
         unit
       ),
-      material_control_dates (
+      material_type_control_dates (
+        material_type,
         period_month,
         control_date,
-        sequence_number
+        control_number,
+        label
       )
     `)
     .order('created_at', { ascending: false })
 
   if (error) throw new Error(error.message)
 
-  return ((data ?? []) as any[]).map(mapKardexInputRow)
+  const rows = ((data ?? []) as any[]).map(mapBaseKardexInputRow)
+  const requirementByControlDate = await getProjectedConsumptionByControlDate()
+
+  return enrichKardexRows(rows, requirementByControlDate)
 }
 
-export async function listControlDates(): Promise<MaterialControlDateView[]> {
+export async function listKardexControlPoints(): Promise<KardexControlPointView[]> {
   const { data, error } = await supabase
-    .from('material_control_dates')
-    .select(`
-      id,
-      material_id,
-      period_month,
-      control_date,
-      sequence_number,
-      created_at,
-      materials (
-        code,
-        name,
-        unit
-      )
-    `)
-    .order('period_month', { ascending: false })
-    .order('sequence_number', { ascending: true })
+    .from('material_type_control_dates')
+    .select('id, material_type, period_month, control_date, control_number, label, status, created_at')
+    .neq('status', 'cancelled')
+    .order('period_month', { ascending: true })
+    .order('control_number', { ascending: true })
 
   if (error) throw new Error(error.message)
 
-  return ((data ?? []) as any[]).map(mapControlDateRow)
+  return ((data ?? []) as any[]).map(mapControlPointRow)
 }
 
 export async function getKardexOptions(): Promise<KardexOptions> {
-  const [materialsResult, controlDates] = await Promise.all([
+  const [materialsResult, controlPoints, requirements] = await Promise.all([
     supabase
       .from('materials')
-      .select('id, code, name, unit')
+      .select('id, code, name, material_type, unit')
       .eq('status', 'active')
+      .order('material_type', { ascending: true })
       .order('code', { ascending: true }),
-    listControlDates(),
+    listKardexControlPoints(),
+    listKardexRequirements(),
   ])
 
   if (materialsResult.error) throw new Error(materialsResult.error.message)
 
+  const materials: MaterialOption[] = ((materialsResult.data ?? []) as any[]).map((row) => ({
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    materialType: row.material_type,
+    materialTypeLabel: formatMaterialTypeLabel(row.material_type),
+    unit: row.unit ?? '',
+  }))
+
+  const materialTypes = buildMaterialTypeOptions(materials)
+
   return {
-    materials: materialsResult.data ?? [],
-    controlDates,
+    materialTypes,
+    materials,
+    controlPoints,
+    requirements,
   }
 }
 
-export async function createControlDate(input: ControlDateFormInput, auditReason: string) {
-  const payload = normalizeControlDatePayload(input)
+export async function listKardexRequirements(): Promise<KardexRequirementView[]> {
+  const direct = await listProjectedConsumptionFromTypeControlDateView()
+  if (direct.length > 0) return direct
 
-  const { data, error } = await supabase
-    .from('material_control_dates')
-    .insert(payload)
-    .select(`
-      id,
-      material_id,
-      period_month,
-      control_date,
-      sequence_number,
-      created_at,
-      materials (
-        code,
-        name,
-        unit
-      )
-    `)
-    .single()
-
-  if (error) throw new Error(error.message)
-
-  await createAuditLog({
-    moduleName: 'kardex',
-    tableName: 'material_control_dates',
-    recordId: data.id,
-    fieldName: 'record',
-    oldValue: null,
-    newValue: payload,
-    changeType: 'create',
-    affectedFromMonth: payload.period_month,
-    affectedToMonth: payload.period_month,
-    reason: auditReason,
-  })
-
-  return mapControlDateRow(data)
-}
-
-export async function updateControlDate(
-  id: string,
-  previous: ControlDateRecordForAudit,
-  input: ControlDateFormInput,
-  auditReason: string,
-) {
-  const payload = normalizeControlDatePayload(input)
-
-  const { data, error } = await supabase
-    .from('material_control_dates')
-    .update(payload)
-    .eq('id', id)
-    .select(`
-      id,
-      material_id,
-      period_month,
-      control_date,
-      sequence_number,
-      created_at,
-      materials (
-        code,
-        name,
-        unit
-      )
-    `)
-    .single()
-
-  if (error) throw new Error(error.message)
-
-  await createAuditLog({
-    moduleName: 'kardex',
-    tableName: 'material_control_dates',
-    recordId: id,
-    fieldName: 'record',
-    oldValue: previous,
-    newValue: payload,
-    changeType: 'update',
-    affectedFromMonth: payload.period_month,
-    affectedToMonth: payload.period_month,
-    reason: auditReason,
-  })
-
-  return mapControlDateRow(data)
+  return listProjectedConsumptionFromMonthlyRequirement()
 }
 
 export async function createKardexInput(input: KardexInputFormInput, auditReason: string) {
@@ -176,7 +116,7 @@ export async function createKardexInput(input: KardexInputFormInput, auditReason
     .select(`
       id,
       material_id,
-      control_date_id,
+      material_type_control_date_id,
       total_bodega,
       pedido,
       transito,
@@ -186,12 +126,15 @@ export async function createKardexInput(input: KardexInputFormInput, auditReason
       materials (
         code,
         name,
+        material_type,
         unit
       ),
-      material_control_dates (
+      material_type_control_dates (
+        material_type,
         period_month,
         control_date,
-        sequence_number
+        control_number,
+        label
       )
     `)
     .single()
@@ -206,12 +149,13 @@ export async function createKardexInput(input: KardexInputFormInput, auditReason
     oldValue: null,
     newValue: payload,
     changeType: 'create',
-    affectedFromMonth: data.material_control_dates?.period_month ?? null,
-    affectedToMonth: data.material_control_dates?.period_month ?? null,
+    affectedFromMonth: data.material_type_control_dates?.period_month ?? null,
+    affectedToMonth: data.material_type_control_dates?.period_month ?? null,
     reason: auditReason,
   })
 
-  return mapKardexInputRow(data)
+  const requirementByControlDate = await getProjectedConsumptionByControlDate()
+  return enrichKardexRows([mapBaseKardexInputRow(data)], requirementByControlDate)[0]
 }
 
 export async function updateKardexInput(
@@ -232,7 +176,7 @@ export async function updateKardexInput(
     .select(`
       id,
       material_id,
-      control_date_id,
+      material_type_control_date_id,
       total_bodega,
       pedido,
       transito,
@@ -242,12 +186,15 @@ export async function updateKardexInput(
       materials (
         code,
         name,
+        material_type,
         unit
       ),
-      material_control_dates (
+      material_type_control_dates (
+        material_type,
         period_month,
         control_date,
-        sequence_number
+        control_number,
+        label
       )
     `)
     .single()
@@ -262,27 +209,127 @@ export async function updateKardexInput(
     oldValue: previous,
     newValue: payload,
     changeType: 'update',
-    affectedFromMonth: data.material_control_dates?.period_month ?? null,
-    affectedToMonth: data.material_control_dates?.period_month ?? null,
+    affectedFromMonth: data.material_type_control_dates?.period_month ?? null,
+    affectedToMonth: data.material_type_control_dates?.period_month ?? null,
     reason: auditReason,
   })
 
-  return mapKardexInputRow(data)
+  const requirementByControlDate = await getProjectedConsumptionByControlDate()
+  return enrichKardexRows([mapBaseKardexInputRow(data)], requirementByControlDate)[0]
 }
 
-function normalizeControlDatePayload(input: ControlDateFormInput) {
-  return {
-    material_id: input.material_id,
-    period_month: fromMonthInputValue(input.period_month),
-    control_date: input.control_date,
-    sequence_number: Number(input.sequence_number),
+async function getProjectedConsumptionByControlDate(): Promise<Record<string, number>> {
+  const requirements = await listKardexRequirements()
+
+  return requirements.reduce<Record<string, number>>((acc, row) => {
+    acc[buildRequirementKey(row.controlDateId, row.materialId)] = row.requiredQuantity
+    return acc
+  }, {})
+}
+
+async function listProjectedConsumptionFromTypeControlDateView(): Promise<KardexRequirementView[]> {
+  const { data, error } = await supabase
+    .from('v_material_requirements_by_type_control_date')
+    .select('control_date_id, material_id, required_quantity')
+
+  if (error) return []
+
+  return ((data ?? []) as any[]).map((row) => ({
+    controlDateId: row.control_date_id,
+    materialId: row.material_id,
+    requiredQuantity: Number(row.required_quantity ?? 0),
+  }))
+}
+
+async function listProjectedConsumptionFromMonthlyRequirement(): Promise<KardexRequirementView[]> {
+  const [controlDatesResult, monthlyResult, materialsResult] = await Promise.all([
+    supabase
+      .from('material_type_control_dates')
+      .select('id, material_type, period_month')
+      .neq('status', 'cancelled'),
+    supabase.from('v_material_requirements_monthly').select('material_id, material_type, period_month, required_quantity'),
+    supabase.from('materials').select('id, material_type'),
+  ])
+
+  if (controlDatesResult.error || monthlyResult.error || materialsResult.error) return []
+
+  const controlDates = (controlDatesResult.data ?? []) as any[]
+  const monthlyRows = (monthlyResult.data ?? []) as any[]
+  const materialsByType = ((materialsResult.data ?? []) as any[]).reduce<Record<string, string[]>>((acc, row) => {
+    acc[row.material_type] = acc[row.material_type] ?? []
+    acc[row.material_type].push(row.id)
+    return acc
+  }, {})
+
+  const controlDateCountByTypeMonth = controlDates.reduce<Record<string, number>>((acc, row) => {
+    const key = `${row.material_type}-${row.period_month}`
+    acc[key] = (acc[key] ?? 0) + 1
+    return acc
+  }, {})
+
+  const projected: KardexRequirementView[] = []
+
+  for (const point of controlDates) {
+    const typeMonthKey = `${point.material_type}-${point.period_month}`
+    const count = controlDateCountByTypeMonth[typeMonthKey] || 1
+    const materialIds = materialsByType[point.material_type] ?? []
+
+    for (const materialId of materialIds) {
+      const monthly = monthlyRows
+        .filter((row) => row.material_id === materialId && row.period_month === point.period_month)
+        .reduce((sum, row) => sum + Number(row.required_quantity ?? 0), 0)
+
+      projected.push({
+        controlDateId: point.id,
+        materialId,
+        requiredQuantity: monthly / count,
+      })
+    }
   }
+
+  return projected
+}
+
+function enrichKardexRows(rows: BaseKardexInputView[], requirementByControlDate: Record<string, number>): KardexInputView[] {
+  const withConsumption = rows.map((row) => {
+    const projectedConsumption = requirementByControlDate[buildRequirementKey(row.controlDateId, row.materialId)] ?? 0
+    const operationalRequirement = projectedConsumption + row.stockSeguridad + row.industrializacion
+    const availableBalance = row.totalBodega + row.pedido + row.transito - operationalRequirement
+    const pendientePorPedir = Math.max(operationalRequirement - row.totalBodega - row.pedido - row.transito, 0)
+
+    return {
+      ...row,
+      projectedConsumption,
+      entregaProduccion: 0,
+      operationalRequirement,
+      pendientePorPedir,
+      inventarioFinal: row.totalBodega + row.pedido + row.transito - projectedConsumption,
+      availableBalance,
+    }
+  })
+
+  return withConsumption.map((row) => {
+    const nextRows = withConsumption
+      .filter((candidate) => candidate.materialId === row.materialId && candidate.controlDate > row.controlDate)
+      .sort((a, b) => a.controlDate.localeCompare(b.controlDate))
+      .slice(0, 2)
+
+    const entregaProduccion = nextRows.reduce((sum, candidate) => sum + candidate.projectedConsumption, 0)
+
+    return {
+      ...row,
+      entregaProduccion,
+      inventarioFinal: row.totalBodega + row.pedido + row.transito - row.projectedConsumption - entregaProduccion,
+    }
+  })
 }
 
 function normalizeKardexInputPayload(input: KardexInputFormInput) {
   return {
     material_id: input.material_id,
-    control_date_id: input.control_date_id,
+    material_type_control_date_id: input.control_date_id,
+    material_type_control_point_id: null,
+    control_date_id: null,
     total_bodega: Number(input.total_bodega || 0),
     pedido: Number(input.pedido || 0),
     transito: Number(input.transito || 0),
@@ -292,52 +339,61 @@ function normalizeKardexInputPayload(input: KardexInputFormInput) {
   }
 }
 
-function mapKardexInputRow(row: any): KardexInputView {
-  const totalBodega = Number(row.total_bodega ?? 0)
-  const pedido = Number(row.pedido ?? 0)
-  const transito = Number(row.transito ?? 0)
-  const stockSeguridad = Number(row.stock_seguridad ?? 0)
-  const industrializacion = Number(row.industrializacion ?? 0)
+function mapBaseKardexInputRow(row: any): BaseKardexInputView {
+  const materialType = row.materials?.material_type ?? row.material_type_control_dates?.material_type ?? 'other'
 
   return {
     id: row.id,
     materialId: row.material_id,
     materialCode: row.materials?.code ?? '-',
     materialName: row.materials?.name ?? '-',
+    materialType,
+    materialTypeLabel: formatMaterialTypeLabel(materialType),
     unit: row.materials?.unit ?? '',
-    controlDateId: row.control_date_id,
-    periodMonth: row.material_control_dates?.period_month ?? '',
-    controlDate: row.material_control_dates?.control_date ?? '',
-    sequenceNumber: Number(row.material_control_dates?.sequence_number ?? 0),
-    totalBodega,
-    pedido,
-    transito,
-    stockSeguridad,
-    industrializacion,
-    availableBalance: totalBodega + pedido + transito - stockSeguridad - industrializacion,
+    controlDateId: row.material_type_control_date_id,
+    periodMonth: row.material_type_control_dates?.period_month ?? '',
+    controlDate: row.material_type_control_dates?.control_date ?? '',
+    controlNumber: Number(row.material_type_control_dates?.control_number ?? 0),
+    controlLabel: row.material_type_control_dates?.label ?? 'Fecha de control',
+    totalBodega: Number(row.total_bodega ?? 0),
+    pedido: Number(row.pedido ?? 0),
+    transito: Number(row.transito ?? 0),
+    stockSeguridad: Number(row.stock_seguridad ?? 0),
+    industrializacion: Number(row.industrializacion ?? 0),
     notes: row.notes,
   }
 }
 
-function mapControlDateRow(row: any): MaterialControlDateView {
+function mapControlPointRow(row: any): KardexControlPointView {
   return {
     id: row.id,
-    materialId: row.material_id,
-    materialCode: row.materials?.code ?? '-',
-    materialName: row.materials?.name ?? '-',
-    unit: row.materials?.unit ?? '',
+    materialType: row.material_type,
+    materialTypeLabel: formatMaterialTypeLabel(row.material_type),
     periodMonth: row.period_month,
     controlDate: row.control_date,
-    sequenceNumber: Number(row.sequence_number ?? 0),
+    controlNumber: Number(row.control_number ?? 0),
+    controlLabel: row.label ?? `Control ${row.control_number ?? ''}`.trim(),
+    status: row.status,
     createdAt: row.created_at,
   }
 }
 
-export function toMonthInputValue(value: string | null | undefined) {
-  if (!value) return ''
-  return value.slice(0, 7)
+function buildMaterialTypeOptions(materials: MaterialOption[]): MaterialTypeOption[] {
+  const grouped = materials.reduce<Record<string, MaterialTypeOption>>((acc, material) => {
+    acc[material.materialType] = acc[material.materialType] ?? {
+      materialType: material.materialType,
+      label: material.materialTypeLabel,
+      unit: material.unit,
+      materialCount: 0,
+    }
+
+    acc[material.materialType].materialCount += 1
+    return acc
+  }, {})
+
+  return Object.values(grouped).sort((a, b) => a.label.localeCompare(b.label, 'es'))
 }
 
-export function fromMonthInputValue(value: string) {
-  return value ? `${value}-01` : ''
+function buildRequirementKey(controlDateId: string, materialId: string) {
+  return `${controlDateId}-${materialId}`
 }

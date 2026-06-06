@@ -154,7 +154,7 @@ export function ForecastsPage() {
       from_month: forecast ? toMonthInputValue(forecast.periodMonth) : '',
       to_month: selectedCollectionOption ? toMonthInputValue(selectedCollectionOption.end_month) : '',
       projected_units: forecast ? String(forecast.projectedUnits) : '',
-      version_label: nextVersionLabel(forecasts),
+      version_label: nextVersionLabel(forecasts, selectedCollection, selectedFit),
       change_reason: 'Cambio desde mes en adelante',
     })
     setReason('Cambio de proyección desde mes en adelante')
@@ -166,7 +166,6 @@ export function ForecastsPage() {
     setDrawerMode(null)
     setSelectedForecast(null)
     setError(null)
-    setFeedback(null)
   }
 
   async function handleForecastSubmit(event: FormEvent<HTMLFormElement>) {
@@ -539,11 +538,12 @@ function validateMonthForwardForm(form: MonthForwardForecastInput) {
   }
 }
 
-function nextVersionLabel(forecasts: ForecastView[]) {
-  const maxVersion = forecasts.reduce((max, forecast) => {
+function nextVersionLabel(forecasts: ForecastView[], collectionId: string, fitId: string) {
+  const scopedForecasts = forecasts.filter((forecast) => forecast.collectionId === collectionId && forecast.fitId === fitId)
+  const maxVersion = scopedForecasts.reduce((max, forecast) => {
     const match = forecast.versionLabel.match(/^V(\d+)$/i)
     return match ? Math.max(max, Number(match[1])) : max
-  }, 1)
+  }, 0)
 
   return `V${maxVersion + 1}`
 }

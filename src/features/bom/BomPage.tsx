@@ -3,6 +3,7 @@ import { Badge } from '../../components/Badge'
 import { Drawer } from '../../components/Drawer'
 import { TableShell } from '../../components/TableShell'
 import { formatDateMonth, formatNumber, formatPercent, mapUnit } from '../../utils/format'
+import { formatMaterialTypeLabel } from '../../utils/materialTypes'
 import {
   createBomLine,
   createVersionWithMix,
@@ -33,6 +34,7 @@ const emptyVersionForm: VersionMixFormInput = {
   color_range_start: '',
   color_range_end: '',
   main_material_id: '',
+  image_url: '',
   share_percentage: '',
   valid_from_month: '',
   valid_to_month: '',
@@ -47,6 +49,7 @@ const emptyBomForm: BomLineFormInput = {
   pieces_per_unit: '1',
   consumption_per_piece: '',
   waste_percentage: '0',
+  image_url: '',
   valid_from_month: '',
   valid_to_month: '',
   status: 'active',
@@ -75,6 +78,7 @@ function versionToForm(row: VersionMixView): VersionMixFormInput {
     color_range_start: row.colorRangeStart?.toString() ?? '',
     color_range_end: row.colorRangeEnd?.toString() ?? '',
     main_material_id: row.mainMaterialId ?? '',
+    image_url: row.versionImageUrl ?? '',
     share_percentage: row.sharePercentage.toString(),
     valid_from_month: toMonthInputValue(row.validFromMonth),
     valid_to_month: toMonthInputValue(row.validToMonth),
@@ -93,6 +97,7 @@ function versionAuditRecord(row: VersionMixView): FitVersionRecordForAudit {
     color_range_start: row.colorRangeStart,
     color_range_end: row.colorRangeEnd,
     main_material_id: row.mainMaterialId,
+    image_url: row.versionImageUrl,
     status: row.status,
   }
 }
@@ -108,21 +113,15 @@ function mixAuditRecord(row: VersionMixView): FitVersionMixRecordForAudit {
   }
 }
 
-function bomToForm(row: BomLineView, options: BomFormOptions): BomLineFormInput {
-  const version = options.fitVersions.find((item) =>
-    item.collectionCode === row.collectionCode
-    && item.fitName === row.fitName
-    && item.versionCode === row.versionCode
-  )
-  const material = options.materials.find((item) => item.code === row.materialCode)
-
+function bomToForm(row: BomLineView, _options: BomFormOptions): BomLineFormInput {
   return {
-    fit_version_id: version?.id ?? '',
+    fit_version_id: row.fitVersionId,
     piece_name: row.pieceName,
-    material_id: material?.id ?? '',
+    material_id: row.materialId,
     pieces_per_unit: row.piecesPerUnit.toString(),
     consumption_per_piece: row.consumptionPerPiece.toString(),
     waste_percentage: row.wastePercentage.toString(),
+    image_url: row.pieceImageUrl ?? '',
     valid_from_month: toMonthInputValue(row.validFromMonth),
     valid_to_month: toMonthInputValue(row.validToMonth),
     status: row.status,
@@ -130,27 +129,54 @@ function bomToForm(row: BomLineView, options: BomFormOptions): BomLineFormInput 
   }
 }
 
-function bomAuditRecord(row: BomLineView, options: BomFormOptions): BomLineRecordForAudit {
-  const version = options.fitVersions.find((item) =>
-    item.collectionCode === row.collectionCode
-    && item.fitName === row.fitName
-    && item.versionCode === row.versionCode
-  )
-  const material = options.materials.find((item) => item.code === row.materialCode)
-
+function bomAuditRecord(row: BomLineView, _options: BomFormOptions): BomLineRecordForAudit {
   return {
     id: row.id,
-    fit_version_id: version?.id ?? '',
+    fit_version_id: row.fitVersionId,
     piece_name: row.pieceName,
-    material_id: material?.id ?? '',
+    material_id: row.materialId,
     pieces_per_unit: row.piecesPerUnit,
     consumption_per_piece: row.consumptionPerPiece,
     waste_percentage: row.wastePercentage,
+    image_url: row.pieceImageUrl,
     valid_from_month: row.validFromMonth,
     valid_to_month: row.validToMonth,
     status: row.status,
     notes: row.notes,
   }
+}
+
+function monthRangesOverlap(
+  firstFrom: string,
+  firstTo: string | null | undefined,
+  secondFrom: string,
+  secondTo: string | null | undefined,
+) {
+  const firstStart = firstFrom.slice(0, 7)
+  const firstEnd = firstTo ? firstTo.slice(0, 7) : '9999-12'
+  const secondStart = secondFrom.slice(0, 7)
+  const secondEnd = secondTo ? secondTo.slice(0, 7) : '9999-12'
+
+  return firstStart <= secondEnd && secondStart <= firstEnd
+}
+
+
+function uniqueBy<T>(items: T[], keyGetter: (item: T) => string) {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    const key = keyGetter(item)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function ImageBox({ src, label, className = '' }: { src?: string | null; label: string; className?: string }) {
+  return (
+    <div className={`entity-image ${className}`}>
+      {src ? <img src={src} alt={label} /> : <span>{label}</span>}
+    </div>
+  )
 }
 
 export function BomPage() {
@@ -163,6 +189,9 @@ export function BomPage() {
     fitVersions: [],
   })
   const [search, setSearch] = useState('')
+  const [selectedVisualFitId, setSelectedVisualFitId] = useState<string | null>(null)
+  const [selectedVisualVersionId, setSelectedVisualVersionId] = useState<string | null>(null)
+  const [selectedVisualPieceId, setSelectedVisualPieceId] = useState<string | null>(null)
   const [drawerMode, setDrawerMode] = useState<DrawerMode>(null)
   const [versionForm, setVersionForm] = useState<VersionMixFormInput>(emptyVersionForm)
   const [bomForm, setBomForm] = useState<BomLineFormInput>(emptyBomForm)
@@ -227,6 +256,74 @@ export function BomPage() {
     )
   }, [versionMix, search])
 
+  const visualFits = useMemo(() => {
+    const query = search.trim().toLowerCase()
+
+    return options.fits
+      .filter((fit) => {
+        if (!query) return true
+        return [fit.code, fit.name, fit.silhouette ?? '', fit.category ?? ''].join(' ').toLowerCase().includes(query)
+      })
+      .map((fit) => {
+        const fitVersions = uniqueBy<VersionMixView>(versionMix.filter((mix) => mix.fitId === fit.id), (mix) => mix.fitVersionId)
+        const fitVersionIds = new Set(fitVersions.map((mix) => mix.fitVersionId))
+        const fitPieces = bomLines.filter((line) => fitVersionIds.has(line.fitVersionId))
+
+        return {
+          ...fit,
+          versionCount: fitVersions.length,
+          pieceCount: fitPieces.length,
+        }
+      })
+  }, [bomLines, options.fits, search, versionMix])
+
+  const selectedVisualFit = useMemo(
+    () => options.fits.find((fit) => fit.id === selectedVisualFitId) ?? null,
+    [options.fits, selectedVisualFitId],
+  )
+
+  const selectedFitVersions = useMemo(() => {
+    if (!selectedVisualFitId) return []
+    return uniqueBy<VersionMixView>(
+      versionMix.filter((mix) => mix.fitId === selectedVisualFitId),
+      (mix) => mix.fitVersionId,
+    ).sort((a, b) => a.versionCode.localeCompare(b.versionCode))
+  }, [selectedVisualFitId, versionMix])
+
+  const visualVersion = useMemo(
+    () => selectedFitVersions.find((version) => version.fitVersionId === selectedVisualVersionId) ?? null,
+    [selectedFitVersions, selectedVisualVersionId],
+  )
+
+  const visualVersionPieces = useMemo(() => {
+    if (!visualVersion) return []
+    return bomLines
+      .filter((line) => line.fitVersionId === visualVersion.fitVersionId)
+      .sort((a, b) => a.pieceName.localeCompare(b.pieceName))
+  }, [bomLines, visualVersion])
+
+  const visualPiece = useMemo(
+    () => visualVersionPieces.find((piece) => piece.id === selectedVisualPieceId) ?? null,
+    [selectedVisualPieceId, visualVersionPieces],
+  )
+
+  const fitPieceSuggestions = useMemo(() => {
+    if (!selectedVisualFitId) return ['Base', 'Bolsillo', 'Botón', 'Marquilla', 'Cremallera']
+
+    const versionIds = new Set(
+      versionMix
+        .filter((mix) => mix.fitId === selectedVisualFitId)
+        .map((mix) => mix.fitVersionId),
+    )
+    const existingPieces = bomLines
+      .filter((line) => versionIds.has(line.fitVersionId))
+      .map((line) => line.pieceName)
+
+    return Array.from(new Set(['Base', 'Bolsillo', 'Botón', 'Marquilla', 'Cremallera', ...existingPieces]))
+      .filter(Boolean)
+      .slice(0, 10)
+  }, [bomLines, selectedVisualFitId, versionMix])
+
   const mixTotalForCurrentFit = useMemo(() => {
     if (!versionForm.collection_id || !versionForm.fit_id) return 0
 
@@ -234,20 +331,28 @@ export function BomPage() {
       .filter((mix) => {
         const isSameContext = mix.collectionId === versionForm.collection_id && mix.fitId === versionForm.fit_id
         const isNotCurrent = drawerMode !== 'version-edit' || mix.id !== selectedVersion?.id
-        return isSameContext && isNotCurrent && mix.status === 'active'
+        const overlaps = monthRangesOverlap(
+          fromMonthInputValue(versionForm.valid_from_month),
+          fromMonthInputValue(versionForm.valid_to_month) || null,
+          mix.validFromMonth,
+          mix.validToMonth,
+        )
+        return isSameContext && isNotCurrent && overlaps && mix.status === 'active'
       })
       .reduce((sum, mix) => sum + mix.sharePercentage, 0)
-  }, [drawerMode, selectedVersion?.id, versionForm.collection_id, versionForm.fit_id, versionMix])
+  }, [drawerMode, selectedVersion?.id, versionForm.collection_id, versionForm.fit_id, versionForm.valid_from_month, versionForm.valid_to_month, versionMix])
 
   const projectedMixTotal = mixTotalForCurrentFit + Number(versionForm.share_percentage || 0)
+  const isProjectedMixComplete = Math.round(projectedMixTotal * 100) / 100 === 100
+  const isProjectedMixExceeded = projectedMixTotal > 100
 
-  function openCreateVersion() {
+  function openCreateVersion(prefilledFitId?: string) {
     setDrawerMode('version-create')
     setSelectedVersion(null)
     setVersionForm({
       ...emptyVersionForm,
       collection_id: options.collections[0]?.id ?? '',
-      fit_id: options.fits[0]?.id ?? '',
+      fit_id: prefilledFitId ?? options.fits[0]?.id ?? '',
       main_material_id: options.materials[0]?.id ?? '',
     })
     setReason('Creación de versión y mix porcentual desde BOM')
@@ -264,12 +369,13 @@ export function BomPage() {
     setFeedback(null)
   }
 
-  function openCreateBomLine() {
+  function openCreateBomLine(prefilledVersionId?: string, prefilledPieceName = '') {
     setDrawerMode('bom-create')
     setSelectedBomLine(null)
     setBomForm({
       ...emptyBomForm,
-      fit_version_id: options.fitVersions[0]?.id ?? '',
+      fit_version_id: prefilledVersionId ?? options.fitVersions[0]?.id ?? '',
+      piece_name: prefilledPieceName,
       material_id: options.materials[0]?.id ?? '',
     })
     setReason('Creación de pieza BOM')
@@ -291,7 +397,28 @@ export function BomPage() {
     setSelectedVersion(null)
     setSelectedBomLine(null)
     setError(null)
-    setFeedback(null)
+  }
+
+  function openVisualFit(fitId: string) {
+    setSelectedVisualFitId(fitId)
+    setSelectedVisualVersionId(null)
+    setSelectedVisualPieceId(null)
+  }
+
+  function openVisualVersion(versionId: string) {
+    setSelectedVisualVersionId(versionId)
+    setSelectedVisualPieceId(null)
+  }
+
+  function backToFitList() {
+    setSelectedVisualFitId(null)
+    setSelectedVisualVersionId(null)
+    setSelectedVisualPieceId(null)
+  }
+
+  function backToSelectedFit() {
+    setSelectedVisualVersionId(null)
+    setSelectedVisualPieceId(null)
   }
 
   async function handleVersionSubmit(event: FormEvent<HTMLFormElement>) {
@@ -308,9 +435,17 @@ export function BomPage() {
         throw new Error('La vigencia desde es obligatoria.')
       }
 
+      if (versionForm.valid_to_month && versionForm.valid_to_month < versionForm.valid_from_month) {
+        throw new Error('La vigencia hasta no puede ser anterior a la vigencia desde.')
+      }
+
       const share = Number(versionForm.share_percentage)
       if (Number.isNaN(share) || share < 0 || share > 100) {
         throw new Error('El porcentaje de participación debe estar entre 0 y 100.')
+      }
+
+      if (versionForm.status === 'active' && isProjectedMixExceeded) {
+        throw new Error(`El mix vigente del FIT supera 100% para la vigencia seleccionada. Total estimado: ${projectedMixTotal.toLocaleString('es-CO')}%.`)
       }
 
       if (!reason.trim()) {
@@ -359,6 +494,10 @@ export function BomPage() {
 
       if (!bomForm.valid_from_month) {
         throw new Error('La vigencia desde es obligatoria.')
+      }
+
+      if (bomForm.valid_to_month && bomForm.valid_to_month < bomForm.valid_from_month) {
+        throw new Error('La vigencia hasta no puede ser anterior a la vigencia desde.')
       }
 
       const pieces = Number(bomForm.pieces_per_unit)
@@ -421,16 +560,194 @@ export function BomPage() {
         <button className="btn btn-secondary" type="button" onClick={() => void loadBom()}>
           Recargar
         </button>
-        <button className="btn btn-primary" type="button" onClick={openCreateVersion}>
+        <button className="btn btn-primary" type="button" onClick={() => openCreateVersion()}>
           + Versión / mix
         </button>
-        <button className="btn btn-primary" type="button" onClick={openCreateBomLine}>
+        <button className="btn btn-primary" type="button" onClick={() => openCreateBomLine()}>
           + Pieza BOM
         </button>
       </div>
 
       {error ? <div className="auth-alert error" style={{ marginBottom: 16 }}>{error}</div> : null}
       {feedback ? <div className="auth-alert success" style={{ marginBottom: 16 }}>{feedback}</div> : null}
+
+      <section className="visual-bom-panel">
+        <div className="visual-bom-head">
+          <div>
+            <span className="table-title">Explorador visual FIT → versión → piezas BOM</span>
+            <p>Selecciona un FIT para ver sus versiones. Luego abre una versión para consultar o crear sus piezas asociadas.</p>
+          </div>
+          <div className="inline-actions">
+            {selectedVisualVersionId ? (
+              <button className="btn btn-secondary" type="button" onClick={backToSelectedFit}>
+                ← Volver al FIT
+              </button>
+            ) : selectedVisualFitId ? (
+              <button className="btn btn-secondary" type="button" onClick={backToFitList}>
+                ← Todos los FITs
+              </button>
+            ) : null}
+            {selectedVisualFit && !visualVersion ? (
+              <button className="btn btn-primary" type="button" onClick={() => openCreateVersion(selectedVisualFit.id)}>
+                + Versión para este FIT
+              </button>
+            ) : null}
+            {visualVersion ? (
+              <button className="btn btn-primary" type="button" onClick={() => openCreateBomLine(visualVersion.fitVersionId)}>
+                + Pieza para esta versión
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        {!selectedVisualFit ? (
+          <div className="visual-fit-grid">
+            {visualFits.length === 0 ? (
+              <div className="empty-state">No hay FITs activos para mostrar.</div>
+            ) : visualFits.map((fit) => (
+              <article className="visual-card" key={fit.id} onClick={() => openVisualFit(fit.id)}>
+                <ImageBox src={fit.imageUrl} label="Sin foto FIT" className="fit" />
+                <div className="visual-card-body">
+                  <div className="visual-eyebrow">{fit.code}</div>
+                  <h3>{fit.name}</h3>
+                  <p>{fit.category ?? 'Sin categoría'} · {fit.silhouette ?? 'Sin silueta'}</p>
+                  <div className="visual-card-metrics">
+                    <span>{fit.versionCount} versiones</span>
+                    <span>{fit.pieceCount} piezas BOM</span>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null}
+
+        {selectedVisualFit && !visualVersion ? (
+          <div className="visual-detail-layout">
+            <aside className="visual-master-card">
+              <ImageBox src={selectedVisualFit.imageUrl} label="Sin foto FIT" className="hero" />
+              <div className="visual-eyebrow">{selectedVisualFit.code}</div>
+              <h2>{selectedVisualFit.name}</h2>
+              <p>{selectedVisualFit.category ?? 'Sin categoría'} · {selectedVisualFit.silhouette ?? 'Sin silueta'}</p>
+              <div className="visual-card-metrics stacked">
+                <span>{selectedFitVersions.length} versiones asociadas</span>
+                <span>{bomLines.filter((line) => selectedFitVersions.some((version) => version.fitVersionId === line.fitVersionId)).length} piezas BOM asociadas</span>
+              </div>
+            </aside>
+
+            <div className="visual-child-area">
+              <div className="visual-section-title">
+                <strong>Versiones asociadas al FIT</strong>
+                <span>Al crear una versión desde aquí queda relacionada automáticamente con este FIT.</span>
+              </div>
+
+              {selectedFitVersions.length === 0 ? (
+                <div className="empty-state">Este FIT todavía no tiene versiones. Usa “+ Versión para este FIT”.</div>
+              ) : (
+                <div className="visual-version-grid">
+                  {selectedFitVersions.map((version) => (
+                    <article className="visual-card compact" key={version.fitVersionId} onClick={() => openVisualVersion(version.fitVersionId)}>
+                      <ImageBox src={version.versionImageUrl} label="Sin foto versión" className="version" />
+                      <div className="visual-card-body">
+                        <div className="visual-eyebrow">{version.collectionCode} · {version.versionCode}</div>
+                        <h3>{version.description || version.mainMaterialName}</h3>
+                        <p>Color {version.colorRange} · {formatPercent(version.sharePercentage, 2)} del mix</p>
+                        <div className="visual-card-metrics">
+                          <span>{bomLines.filter((line) => line.fitVersionId === version.fitVersionId).length} piezas</span>
+                          <span>{mapStatus(version.status)}</span>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {visualVersion ? (
+          <div className="visual-version-view">
+            <div className="visual-version-hero">
+              <ImageBox src={visualVersion.versionImageUrl || visualVersion.fitImageUrl} label="Sin foto versión" className="hero wide" />
+              <div>
+                <div className="visual-eyebrow">{visualVersion.collectionCode} · {visualVersion.fitName}</div>
+                <h2>{visualVersion.versionCode}</h2>
+                <p>{visualVersion.description || 'Versión sin descripción registrada.'}</p>
+                <div className="visual-card-metrics">
+                  <span>Color {visualVersion.colorRange}</span>
+                  <span>Material principal: {visualVersion.mainMaterialName}</span>
+                  <span>Mix {formatPercent(visualVersion.sharePercentage, 2)}</span>
+                </div>
+                <div className="inline-actions" style={{ marginTop: 12 }}>
+                  <button className="action-btn" type="button" onClick={() => openEditVersion(visualVersion)}>Editar versión</button>
+                  <button className="action-btn" type="button" onClick={() => openCreateBomLine(visualVersion.fitVersionId)}>Agregar pieza BOM</button>
+                </div>
+              </div>
+            </div>
+
+            <div className="visual-section-title">
+              <strong>Piezas asociadas a la versión</strong>
+              <span>Al agregar una pieza desde aquí queda asociada automáticamente a esta versión del FIT.</span>
+            </div>
+
+            <div className="piece-suggestion-row">
+              <span>Piezas rápidas:</span>
+              {fitPieceSuggestions.map((pieceName) => (
+                <button className="filter-chip" key={pieceName} type="button" onClick={() => openCreateBomLine(visualVersion.fitVersionId, pieceName)}>
+                  + {pieceName}
+                </button>
+              ))}
+            </div>
+
+            {visualVersionPieces.length === 0 ? (
+              <div className="empty-state">Esta versión todavía no tiene piezas BOM asociadas.</div>
+            ) : (
+              <div className="visual-piece-grid">
+                {visualVersionPieces.map((piece) => (
+                  <article
+                    className={`visual-card piece ${selectedVisualPieceId === piece.id ? 'selected' : ''}`}
+                    key={piece.id}
+                    onClick={() => setSelectedVisualPieceId(piece.id)}
+                  >
+                    <ImageBox src={piece.pieceImageUrl} label="Sin foto pieza" className="piece-img" />
+                    <div className="visual-card-body">
+                      <div className="visual-eyebrow">{piece.materialCode}</div>
+                      <h3>{piece.pieceName}</h3>
+                      <p>{piece.materialName}</p>
+                      <div className="visual-card-metrics stacked">
+                        <span>{formatNumber(piece.piecesPerUnit, 2)} piezas/u</span>
+                        <span>{formatNumber(piece.effectiveConsumptionPerUnit, 4)} {mapUnit(piece.materialUnit)} efectivos/u</span>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+
+            {visualPiece ? (
+              <div className="piece-detail-panel">
+                <ImageBox src={visualPiece.pieceImageUrl} label="Sin foto pieza" className="hero" />
+                <div className="piece-detail-content">
+                  <div className="visual-eyebrow">Detalle pieza BOM</div>
+                  <h3>{visualPiece.pieceName}</h3>
+                  <p>{visualPiece.notes ?? 'Sin notas técnicas registradas.'}</p>
+                  <div className="piece-detail-grid">
+                    <span>Material</span><strong>{visualPiece.materialCode} · {visualPiece.materialName}</strong>
+                    <span>Tipo material</span><strong>{formatMaterialTypeLabel(visualPiece.materialType)}</strong>
+                    <span>Piezas por unidad</span><strong>{formatNumber(visualPiece.piecesPerUnit, 4)}</strong>
+                    <span>Consumo por pieza</span><strong>{formatNumber(visualPiece.consumptionPerPiece, 4)} {mapUnit(visualPiece.materialUnit)}</strong>
+                    <span>Desperdicio</span><strong>{formatPercent(visualPiece.wastePercentage, 2)}</strong>
+                    <span>Consumo efectivo/u</span><strong>{formatNumber(visualPiece.effectiveConsumptionPerUnit, 4)} {mapUnit(visualPiece.materialUnit)}</strong>
+                    <span>Vigencia</span><strong>{formatDateMonth(visualPiece.validFromMonth)} → {visualPiece.validToMonth ? formatDateMonth(visualPiece.validToMonth) : 'abierta'}</strong>
+                  </div>
+                  <button className="btn btn-secondary" type="button" onClick={() => openEditBomLine(visualPiece)}>
+                    Editar pieza
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
 
       <TableShell title="Piezas BOM por versión" subtitle="El consumo depende de la versión, no solo del FIT">
         <table>
@@ -569,6 +886,15 @@ export function BomPage() {
             <input className="form-control" value={versionForm.description} onChange={(event) => setVersionForm({ ...versionForm, description: event.target.value })} placeholder="Versión Denim azul rango 940-942" />
           </div>
 
+          <div className="form-group">
+            <label>Foto de la versión (URL de imagen)</label>
+            <input className="form-control" value={versionForm.image_url} onChange={(event) => setVersionForm({ ...versionForm, image_url: event.target.value })} placeholder="https://.../version-color-940.jpg" />
+          </div>
+
+          {versionForm.image_url ? (
+            <ImageBox src={versionForm.image_url} label="Vista previa versión" className="preview" />
+          ) : null}
+
           <div className="form-row">
             <div className="form-group">
               <label>Rango color inicio</label>
@@ -608,9 +934,21 @@ export function BomPage() {
             </div>
             <div className="form-group">
               <label>Total mix estimado</label>
-              <div className={`composition-total ${Math.round(projectedMixTotal * 100) / 100 === 100 ? 'ok' : 'warn'}`}>
+              <div className={`composition-total ${isProjectedMixComplete ? 'ok' : 'warn'}`}>
                 {projectedMixTotal.toLocaleString('es-CO')}%
               </div>
+            </div>
+          </div>
+
+          <div className="impact-box">
+            <div className="impact-title">Validación de mix por vigencia</div>
+            <div className="impact-row">
+              <span>Regla</span>
+              <strong>FIT + colección + meses solapados no debe superar 100%</strong>
+            </div>
+            <div className="impact-row">
+              <span>Estado</span>
+              <strong>{isProjectedMixComplete ? 'Completo para activar/publicar' : isProjectedMixExceeded ? 'Excede 100%' : 'Incompleto; puede seguir en configuración'}</strong>
             </div>
           </div>
 
@@ -674,6 +1012,15 @@ export function BomPage() {
               ))}
             </select>
           </div>
+
+          <div className="form-group">
+            <label>Foto de la pieza (URL de imagen)</label>
+            <input className="form-control" value={bomForm.image_url} onChange={(event) => setBomForm({ ...bomForm, image_url: event.target.value })} placeholder="https://.../pieza-base.jpg" />
+          </div>
+
+          {bomForm.image_url ? (
+            <ImageBox src={bomForm.image_url} label="Vista previa pieza" className="preview" />
+          ) : null}
 
           <div className="form-row">
             <div className="form-group">

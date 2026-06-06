@@ -6,6 +6,8 @@ export type AppSection =
   | 'forecasts'
   | 'supply'
   | 'kardex'
+  | 'gantt'
+  | 'cronograma'
   | 'collections'
   | 'audit'
 
@@ -48,7 +50,9 @@ export const navGroups: NavGroup[] = [
     title: 'Planeación',
     items: [
       { id: 'supply', label: 'Necesidad de materiales', icon: '⊞', badge: '3', badgeTone: 'critical' },
-      { id: 'kardex', label: 'Kardex por material', icon: '≡', badge: '!', badgeTone: 'warning' },
+      { id: 'gantt', label: 'GANTT', icon: '▤' },
+      { id: 'cronograma', label: 'Cronograma', icon: '▦' },
+      { id: 'kardex', label: 'Kardex', icon: '≡', badge: '!', badgeTone: 'warning' },
     ],
   },
   {
@@ -66,7 +70,9 @@ export const sectionTitles: Record<AppSection, string> = {
   bom: 'BOM · Versiones y piezas',
   forecasts: 'Proyecciones mensuales por FIT',
   supply: 'Necesidad de materiales',
-  kardex: 'Kardex por material',
+  gantt: 'GANTT de materiales',
+  cronograma: 'Cronograma',
+  kardex: 'Kardex',
   collections: 'Colecciones y vigencias',
   audit: 'Auditoría de cambios',
 }
