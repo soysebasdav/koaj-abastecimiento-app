@@ -14,6 +14,8 @@ import type {
   ProcessDateRecordForAudit,
 } from './ganttTypes'
 
+const MAX_CONTROLS_PER_MONTH = 5
+
 export async function getGanttOptions(): Promise<GanttOptions> {
   const [materials, controlDates, processDates, fitStarts] = await Promise.all([
     listMaterialsForGantt(),
@@ -134,7 +136,20 @@ export async function updateControlDate(
   auditReason: string,
 ): Promise<MaterialTypeControlDate> {
   const payload = normalizeControlDatePayload(input)
-  await assertControlDateLimit(payload.material_type, payload.period_month, payload.control_number, id)
+  const isSameControlGroup = previous.material_type === payload.material_type && previous.period_month === payload.period_month
+  const isControlNumberChange = Number(previous.control_number) !== Number(payload.control_number)
+
+  if (isSameControlGroup && isControlNumberChange) {
+    const conflict = await findActiveControlDateByNumber(payload.material_type, payload.period_month, payload.control_number, id)
+
+    if (conflict) {
+      await swapControlDateNumbers(id, previous, conflict, payload, auditReason)
+    } else {
+      await assertControlDateLimit(payload.material_type, payload.period_month, payload.control_number, id)
+    }
+  } else {
+    await assertControlDateLimit(payload.material_type, payload.period_month, payload.control_number, id)
+  }
 
   const { data, error } = await supabase
     .from('material_type_control_dates')
@@ -221,6 +236,95 @@ export async function updateProcessDate(
   return mapProcessDateRow(data)
 }
 
+async function findActiveControlDateByNumber(
+  materialType: string,
+  periodMonth: string,
+  controlNumber: number,
+  excludeId?: string,
+): Promise<ControlDateRecordForAudit | null> {
+  let query = supabase
+    .from('material_type_control_dates')
+    .select('id, material_type, period_month, control_number, control_date, label, status, notes')
+    .eq('material_type', materialType)
+    .eq('period_month', periodMonth)
+    .eq('control_number', controlNumber)
+    .neq('status', 'cancelled')
+    .limit(1)
+
+  if (excludeId) {
+    query = query.neq('id', excludeId)
+  }
+
+  const { data, error } = await query.maybeSingle()
+
+  if (error) throw new Error(error.message)
+  if (!data) return null
+
+  return data as ControlDateRecordForAudit
+}
+
+async function swapControlDateNumbers(
+  currentId: string,
+  currentPrevious: ControlDateRecordForAudit,
+  conflictPrevious: ControlDateRecordForAudit,
+  currentPayload: ReturnType<typeof normalizeControlDatePayload>,
+  auditReason: string,
+) {
+  const swappedConflictPayload = {
+    material_type: conflictPrevious.material_type,
+    period_month: conflictPrevious.period_month,
+    control_number: Number(currentPrevious.control_number),
+    control_date: conflictPrevious.control_date,
+    label: `Control ${currentPrevious.control_number}`,
+    status: conflictPrevious.status as ControlDateFormInput['status'],
+    notes: conflictPrevious.notes,
+  }
+
+  const applyConflictSwap = async () => {
+    const { error } = await supabase
+      .from('material_type_control_dates')
+      .update({
+        control_number: swappedConflictPayload.control_number,
+        label: swappedConflictPayload.label,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', conflictPrevious.id)
+
+    if (error) throw new Error(error.message)
+  }
+
+  try {
+    await applyConflictSwap()
+  } catch (err) {
+    // Si la base tiene una restricción única por número de control, hacemos el intercambio
+    // con un número temporal y luego dejamos ambos registros en sus posiciones finales.
+    const temporaryNumber = MAX_CONTROLS_PER_MONTH + 100
+    const temporaryUpdate = await supabase
+      .from('material_type_control_dates')
+      .update({ control_number: temporaryNumber, label: 'Control temporal', updated_at: new Date().toISOString() })
+      .eq('id', currentId)
+
+    if (temporaryUpdate.error) {
+      throw err instanceof Error ? err : new Error('No fue posible preparar el intercambio de controles.')
+    }
+
+    await applyConflictSwap()
+  }
+
+  await createAuditLog({
+    moduleName: 'gantt',
+    tableName: 'material_type_control_dates',
+    recordId: conflictPrevious.id,
+    fieldName: 'control_number',
+    oldValue: conflictPrevious,
+    newValue: swappedConflictPayload,
+    changeType: 'update',
+    affectedFromMonth: currentPayload.period_month,
+    affectedToMonth: currentPayload.period_month,
+    reason: `${auditReason} · Intercambio automático con Control ${currentPayload.control_number}.`,
+  })
+}
+
 async function assertControlDateLimit(materialType: string, periodMonth: string, controlNumber: number, excludeId?: string) {
   let query = supabase
     .from('material_type_control_dates')
@@ -243,8 +347,8 @@ async function assertControlDateLimit(materialType: string, periodMonth: string,
     throw new Error('Ya existe una fecha de control con ese número para este tipo de material y mes.')
   }
 
-  if ((count ?? 0) >= 4) {
-    throw new Error('Este tipo de material ya tiene 4 fechas de control activas para el mes seleccionado.')
+  if ((count ?? 0) >= MAX_CONTROLS_PER_MONTH) {
+    throw new Error(`Este tipo de material ya tiene ${MAX_CONTROLS_PER_MONTH} fechas de control activas para el mes seleccionado.`)
   }
 }
 

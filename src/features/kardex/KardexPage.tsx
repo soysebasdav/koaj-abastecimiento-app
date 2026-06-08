@@ -1,9 +1,9 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { Fragment, FormEvent, useEffect, useMemo, useState } from 'react'
 import { Badge } from '../../components/Badge'
 import { Drawer } from '../../components/Drawer'
 import { KpiCard } from '../../components/KpiCard'
 import { TableShell } from '../../components/TableShell'
-import { formatDate, formatDateMonth, formatNumber, formatQuantity } from '../../utils/format'
+import { formatDate, formatDateMonth, formatNumber } from '../../utils/format'
 import {
   createKardexInput,
   getKardexOptions,
@@ -11,6 +11,7 @@ import {
   updateKardexInput,
 } from './kardexService'
 import type {
+  KardexControlPointView,
   KardexInputFormInput,
   KardexInputRecordForAudit,
   KardexInputView,
@@ -19,8 +20,78 @@ import type {
 
 type DrawerMode = 'input-create' | 'input-edit' | null
 
+const MAX_CONTROLS_PER_MONTH = 5
+
 type KardexDisplayRow = KardexInputView & {
   isRegistered: boolean
+}
+
+type KardexTotals = {
+  totalBodega: number
+  totalPedido: number
+  totalTransito: number
+  totalStockSeguridad: number
+  totalIndustrializacion: number
+  totalDisponible: number
+  totalConsumoProyectado: number
+  totalEntregaProduccion: number
+  totalPendiente: number
+  totalInventarioFinal: number
+}
+
+type KardexControlBranch = {
+  point: KardexControlPointView
+  rows: KardexDisplayRow[]
+  totals: KardexTotals
+  registeredRowsCount: number
+}
+
+type KardexMonthGroup = {
+  month: string
+  monthLabel: string
+  controls: KardexControlBranch[]
+}
+
+type KardexWeekGroup = {
+  weekKey: string
+  weekNumber: number
+  weekLabel: string
+  controls: KardexControlBranch[]
+}
+
+type KardexPivotColumn = {
+  key: string
+  label: string
+  group: KardexMonthGroup
+  week: KardexWeekGroup
+  control: KardexControlBranch
+}
+
+type KardexPivotMetric = {
+  key: string
+  label: string
+  className?: string
+  getValue: (column: KardexPivotColumn) => string
+}
+
+type KardexMaterialPivotMetric = {
+  key: string
+  label: string
+  className?: string
+  getValue: (row: KardexDisplayRow | undefined) => string
+}
+
+const emptyTotals: KardexTotals = {
+  totalBodega: 0,
+  totalPedido: 0,
+  totalTransito: 0,
+  totalStockSeguridad: 0,
+  totalIndustrializacion: 0,
+  totalDisponible: 0,
+  totalConsumoProyectado: 0,
+  totalEntregaProduccion: 0,
+  totalPendiente: 0,
+  totalInventarioFinal: 0,
 }
 
 const emptyKardexInputForm: KardexInputFormInput = {
@@ -71,11 +142,13 @@ export function KardexPage() {
     materials: [],
     controlPoints: [],
     requirements: [],
+    inventoryBalances: [],
   })
   const [selectedMaterialType, setSelectedMaterialType] = useState('')
-  const [selectedControlPointId, setSelectedControlPointId] = useState('')
-  const [selectedMaterial, setSelectedMaterial] = useState('all')
+  const [selectedControlPointId, setSelectedControlPointId] = useState('all')
   const [search, setSearch] = useState('')
+  const [detailMaterialType, setDetailMaterialType] = useState('')
+  const [detailMaterialIds, setDetailMaterialIds] = useState<string[]>([])
   const [drawerMode, setDrawerMode] = useState<DrawerMode>(null)
   const [selectedKardexInput, setSelectedKardexInput] = useState<KardexInputView | null>(null)
   const [kardexForm, setKardexForm] = useState<KardexInputFormInput>(emptyKardexInputForm)
@@ -84,6 +157,10 @@ export function KardexPage() {
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [feedback, setFeedback] = useState<string | null>(null)
+  const [isSummaryLeftPinned, setIsSummaryLeftPinned] = useState(true)
+  const [isSummaryLeftHidden, setIsSummaryLeftHidden] = useState(false)
+  const [isDetailLeftPinned, setIsDetailLeftPinned] = useState(true)
+  const [isDetailLeftHidden, setIsDetailLeftHidden] = useState(false)
 
   async function loadKardex() {
     setIsLoading(true)
@@ -115,6 +192,24 @@ export function KardexPage() {
   }, [options.materialTypes, selectedMaterialType])
 
   useEffect(() => {
+    if (!detailMaterialType && options.materialTypes.length > 0) {
+      setDetailMaterialType(selectedMaterialType || options.materialTypes[0].materialType)
+    }
+  }, [detailMaterialType, options.materialTypes, selectedMaterialType])
+
+  useEffect(() => {
+    setDetailMaterialIds((currentIds) => {
+      const availableIds = new Set(
+        options.materials
+          .filter((material) => !detailMaterialType || material.materialType === detailMaterialType)
+          .map((material) => material.id),
+      )
+
+      return currentIds.filter((materialId) => availableIds.has(materialId))
+    })
+  }, [detailMaterialType, options.materials])
+
+  useEffect(() => {
     if (!selectedMaterialType) {
       setSelectedControlPointId('')
       return
@@ -126,8 +221,13 @@ export function KardexPage() {
       return
     }
 
+    if (!selectedControlPointId || selectedControlPointId === 'all') {
+      setSelectedControlPointId('all')
+      return
+    }
+
     if (!controlPointsForType.some((point) => point.id === selectedControlPointId)) {
-      setSelectedControlPointId(controlPointsForType[0].id)
+      setSelectedControlPointId('all')
     }
   }, [options.controlPoints, selectedControlPointId, selectedMaterialType])
 
@@ -139,70 +239,184 @@ export function KardexPage() {
   }, [options.materials, selectedMaterialType])
 
   const visibleControlPoints = useMemo(() => {
-    if (!selectedMaterialType) return options.controlPoints
-    return options.controlPoints.filter((point) => point.materialType === selectedMaterialType)
+    const points = !selectedMaterialType
+      ? options.controlPoints
+      : options.controlPoints.filter((point) => point.materialType === selectedMaterialType)
+
+    return [...points].sort(sortControlPoints)
   }, [options.controlPoints, selectedMaterialType])
 
   const selectedControlPoint = useMemo(() => {
-    return visibleControlPoints.find((point) => point.id === selectedControlPointId) ?? visibleControlPoints[0] ?? null
+    if (!selectedControlPointId || selectedControlPointId === 'all') return null
+    return visibleControlPoints.find((point) => point.id === selectedControlPointId) ?? null
   }, [selectedControlPointId, visibleControlPoints])
 
-  const inputRowsByMaterial = useMemo(() => {
+  const activeControlPoints = useMemo(() => {
+    if (!selectedControlPointId || selectedControlPointId === 'all') return visibleControlPoints
+    return visibleControlPoints.filter((point) => point.id === selectedControlPointId)
+  }, [selectedControlPointId, visibleControlPoints])
+
+  const summaryMaterials = visibleMaterials
+
+  const detailMaterialsForType = useMemo(() => {
+    if (!detailMaterialType) return options.materials
+    return options.materials.filter((material) => material.materialType === detailMaterialType)
+  }, [detailMaterialType, options.materials])
+
+  const detailFilteredMaterials = useMemo(() => {
+    if (detailMaterialIds.length === 0) return detailMaterialsForType
+
+    const selectedIds = new Set(detailMaterialIds)
+    return detailMaterialsForType.filter((material) => selectedIds.has(material.id))
+  }, [detailMaterialIds, detailMaterialsForType])
+
+  const detailControlPoints = useMemo(() => {
+    const points = !detailMaterialType
+      ? options.controlPoints
+      : options.controlPoints.filter((point) => point.materialType === detailMaterialType)
+
+    return [...points].sort(sortControlPoints)
+  }, [detailMaterialType, options.controlPoints])
+
+  const selectedDetailTypeOption = options.materialTypes.find((type) => type.materialType === detailMaterialType)
+
+  const inputRowsByControlAndMaterial = useMemo(() => {
     return rows.reduce<Record<string, KardexInputView>>((acc, row) => {
-      if (selectedControlPoint && row.controlDateId === selectedControlPoint.id) {
-        acc[row.materialId] = row
-      }
+      acc[buildKardexKey(row.controlDateId, row.materialId)] = row
       return acc
     }, {})
-  }, [rows, selectedControlPoint])
+  }, [rows])
 
-  const requirementByMaterial = useMemo(() => {
+  const requirementByControlAndMaterial = useMemo(() => {
     return options.requirements.reduce<Record<string, number>>((acc, row) => {
-      if (selectedControlPoint && row.controlDateId === selectedControlPoint.id) {
-        acc[row.materialId] = row.requiredQuantity
-      }
+      acc[buildKardexKey(row.controlDateId, row.materialId)] = row.requiredQuantity
       return acc
     }, {})
-  }, [options.requirements, selectedControlPoint])
+  }, [options.requirements])
 
-  const kardexDetailRows = useMemo<KardexDisplayRow[]>(() => {
-    if (!selectedControlPoint) return []
+  const inventoryBalanceByMaterial = useMemo(() => {
+    return options.inventoryBalances.reduce<Record<string, number>>((acc, row) => {
+      acc[row.materialId] = row.totalBodega
+      return acc
+    }, {})
+  }, [options.inventoryBalances])
 
+  function getInventoryBalance(materialId: string | null | undefined) {
+    return materialId ? inventoryBalanceByMaterial[materialId] ?? 0 : 0
+  }
+
+  const kardexGroupsByMonth = useMemo<KardexMonthGroup[]>(() => {
     const query = search.trim().toLowerCase()
+    const groups = new Map<string, KardexMonthGroup>()
 
-    return visibleMaterials
-      .filter((material) => selectedMaterial === 'all' || material.id === selectedMaterial)
-      .filter((material) => !query || [
-        material.code,
-        material.name,
-        material.materialTypeLabel,
-        selectedControlPoint.controlLabel,
-        selectedControlPoint.controlDate,
-      ].join(' ').toLowerCase().includes(query))
-      .map((material) => {
-        const savedInput = inputRowsByMaterial[material.id]
+    for (const point of activeControlPoints) {
+      const controlRows = summaryMaterials
+        .filter((material) => !query || [
+          material.code,
+          material.name,
+          material.materialTypeLabel,
+          point.controlLabel,
+          `Control ${point.controlNumber}`,
+          point.controlDate,
+          point.periodMonth,
+          formatMonthTitle(point.periodMonth),
+          formatControlWeekLabel(point.controlDate),
+        ].join(' ').toLowerCase().includes(query))
+        .map((material) => {
+          const savedInput = inputRowsByControlAndMaterial[buildKardexKey(point.id, material.id)]
+          if (savedInput) {
+            return { ...savedInput, isRegistered: true }
+          }
+
+          const projectedConsumption = requirementByControlAndMaterial[buildKardexKey(point.id, material.id)] ?? 0
+          const totalBodega = getInventoryBalance(material.id)
+          const operationalRequirement = projectedConsumption
+          const availableBalance = totalBodega - operationalRequirement
+          const pendientePorPedir = Math.max(operationalRequirement - totalBodega, 0)
+
+          return {
+            id: `virtual-${point.id}-${material.id}`,
+            materialId: material.id,
+            materialCode: material.code,
+            materialName: material.name,
+            materialType: material.materialType,
+            materialTypeLabel: material.materialTypeLabel,
+            unit: material.unit,
+            controlDateId: point.id,
+            periodMonth: point.periodMonth,
+            controlDate: point.controlDate,
+            controlNumber: point.controlNumber,
+            controlLabel: point.controlLabel,
+            totalBodega,
+            pedido: 0,
+            transito: 0,
+            stockSeguridad: 0,
+            industrializacion: 0,
+            projectedConsumption,
+            entregaProduccion: 0,
+            operationalRequirement,
+            pendientePorPedir,
+            inventarioFinal: totalBodega - projectedConsumption,
+            availableBalance,
+            notes: null,
+            isRegistered: false,
+          }
+        })
+
+      const month = point.periodMonth || 'sin-mes'
+      const group = groups.get(month) ?? {
+        month,
+        monthLabel: formatMonthTitle(point.periodMonth),
+        controls: [],
+      }
+
+      group.controls.push({
+        point,
+        rows: controlRows,
+        totals: aggregateKardexRows(controlRows),
+        registeredRowsCount: controlRows.filter((row) => row.isRegistered).length,
+      })
+      groups.set(month, group)
+    }
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        controls: [...group.controls].sort((a, b) => sortControlPoints(a.point, b.point)),
+      }))
+      .sort((a, b) => a.month.localeCompare(b.month))
+  }, [activeControlPoints, summaryMaterials, inputRowsByControlAndMaterial, requirementByControlAndMaterial, inventoryBalanceByMaterial, search])
+
+  const kardexDetailGroupsByMonth = useMemo<KardexMonthGroup[]>(() => {
+    const groups = new Map<string, KardexMonthGroup>()
+
+    for (const point of detailControlPoints) {
+      const controlRows = detailFilteredMaterials.map((material) => {
+        const savedInput = inputRowsByControlAndMaterial[buildKardexKey(point.id, material.id)]
         if (savedInput) {
           return { ...savedInput, isRegistered: true }
         }
 
-        const projectedConsumption = requirementByMaterial[material.id] ?? 0
+        const projectedConsumption = requirementByControlAndMaterial[buildKardexKey(point.id, material.id)] ?? 0
+        const totalBodega = getInventoryBalance(material.id)
         const operationalRequirement = projectedConsumption
-        const pendientePorPedir = Math.max(operationalRequirement, 0)
+        const availableBalance = totalBodega - operationalRequirement
+        const pendientePorPedir = Math.max(operationalRequirement - totalBodega, 0)
 
         return {
-          id: `virtual-${selectedControlPoint.id}-${material.id}`,
+          id: `virtual-${point.id}-${material.id}`,
           materialId: material.id,
           materialCode: material.code,
           materialName: material.name,
           materialType: material.materialType,
           materialTypeLabel: material.materialTypeLabel,
           unit: material.unit,
-          controlDateId: selectedControlPoint.id,
-          periodMonth: selectedControlPoint.periodMonth,
-          controlDate: selectedControlPoint.controlDate,
-          controlNumber: selectedControlPoint.controlNumber,
-          controlLabel: selectedControlPoint.controlLabel,
-          totalBodega: 0,
+          controlDateId: point.id,
+          periodMonth: point.periodMonth,
+          controlDate: point.controlDate,
+          controlNumber: point.controlNumber,
+          controlLabel: point.controlLabel,
+          totalBodega,
           pedido: 0,
           transito: 0,
           stockSeguridad: 0,
@@ -211,25 +425,50 @@ export function KardexPage() {
           entregaProduccion: 0,
           operationalRequirement,
           pendientePorPedir,
-          inventarioFinal: -projectedConsumption,
-          availableBalance: -operationalRequirement,
+          inventarioFinal: totalBodega - projectedConsumption,
+          availableBalance,
           notes: null,
           isRegistered: false,
         }
       })
-  }, [inputRowsByMaterial, requirementByMaterial, search, selectedControlPoint, selectedMaterial, visibleMaterials])
 
-  const totalBodega = kardexDetailRows.reduce((sum, row) => sum + row.totalBodega, 0)
-  const totalPedido = kardexDetailRows.reduce((sum, row) => sum + row.pedido, 0)
-  const totalTransito = kardexDetailRows.reduce((sum, row) => sum + row.transito, 0)
-  const totalStockSeguridad = kardexDetailRows.reduce((sum, row) => sum + row.stockSeguridad, 0)
-  const totalIndustrializacion = kardexDetailRows.reduce((sum, row) => sum + row.industrializacion, 0)
-  const totalDisponible = kardexDetailRows.reduce((sum, row) => sum + row.availableBalance, 0)
-  const totalConsumoProyectado = kardexDetailRows.reduce((sum, row) => sum + row.projectedConsumption, 0)
-  const totalEntregaProduccion = kardexDetailRows.reduce((sum, row) => sum + row.entregaProduccion, 0)
-  const totalPendiente = kardexDetailRows.reduce((sum, row) => sum + row.pendientePorPedir, 0)
-  const totalInventarioFinal = kardexDetailRows.reduce((sum, row) => sum + row.inventarioFinal, 0)
+      const month = point.periodMonth || 'sin-mes'
+      const group = groups.get(month) ?? {
+        month,
+        monthLabel: formatMonthTitle(point.periodMonth),
+        controls: [],
+      }
+
+      group.controls.push({
+        point,
+        rows: controlRows,
+        totals: aggregateKardexRows(controlRows),
+        registeredRowsCount: controlRows.filter((row) => row.isRegistered).length,
+      })
+      groups.set(month, group)
+    }
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        controls: [...group.controls].sort((a, b) => sortControlPoints(a.point, b.point)),
+      }))
+      .sort((a, b) => a.month.localeCompare(b.month))
+  }, [detailControlPoints, detailFilteredMaterials, inputRowsByControlAndMaterial, requirementByControlAndMaterial, inventoryBalanceByMaterial])
+
+  const kardexDetailRows = useMemo(() => {
+    return kardexGroupsByMonth.flatMap((group) => group.controls.flatMap((control) => control.rows))
+  }, [kardexGroupsByMonth])
+
+  const totals = useMemo(() => aggregateKardexRows(kardexDetailRows), [kardexDetailRows])
   const registeredRowsCount = kardexDetailRows.filter((row) => row.isRegistered).length
+  const visibleControlsCount = kardexGroupsByMonth.reduce((sum, group) => sum + group.controls.length, 0)
+  const kardexPivotColumns = useMemo(() => buildKardexPivotColumns(kardexGroupsByMonth), [kardexGroupsByMonth])
+  const kardexMonthHeaderGroups = useMemo(() => buildKardexMonthHeaderGroups(kardexPivotColumns), [kardexPivotColumns])
+  const kardexPivotColSpan = Math.max(kardexPivotColumns.length + 1, 2)
+  const detailKardexPivotColumns = useMemo(() => buildKardexPivotColumns(kardexDetailGroupsByMonth), [kardexDetailGroupsByMonth])
+  const detailKardexMonthHeaderGroups = useMemo(() => buildKardexMonthHeaderGroups(detailKardexPivotColumns), [detailKardexPivotColumns])
+  const detailKardexPivotColSpan = Math.max(detailKardexPivotColumns.length + 1, 2)
 
   const availableBalancePreview = useMemo(() => {
     return (
@@ -243,22 +482,42 @@ export function KardexPage() {
 
   function handleMaterialTypeChange(materialType: string) {
     setSelectedMaterialType(materialType)
-    setSelectedMaterial('all')
-    setSelectedControlPointId('')
+    setSelectedControlPointId('all')
+  }
+
+  function handleDetailMaterialTypeChange(materialType: string) {
+    setDetailMaterialType(materialType)
+    setDetailMaterialIds([])
+  }
+
+  function handleDetailMaterialsChange(selectedIds: string[]) {
+    setDetailMaterialIds(selectedIds)
   }
 
   function openCreateInput(materialId?: string, controlDateId?: string) {
-    const materialType = selectedMaterialType || (options.materialTypes[0]?.materialType ?? '')
+    const initialMaterialId = materialId
+    const selectedMaterialOption = initialMaterialId ? options.materials.find((material) => material.id === initialMaterialId) : null
+    const selectedPoint = controlDateId ? options.controlPoints.find((point) => point.id === controlDateId) : null
+    const materialType = selectedMaterialOption?.materialType
+      ?? selectedPoint?.materialType
+      ?? selectedMaterialType
+      ?? options.materialTypes[0]?.materialType
+      ?? ''
     const firstMaterial = options.materials.find((material) => material.materialType === materialType)
-    const firstControlPoint = selectedControlPoint ?? options.controlPoints.find((point) => point.materialType === materialType)
+    const selectedMaterialId = initialMaterialId ?? firstMaterial?.id ?? ''
+    const firstControlPoint = selectedPoint
+      ?? selectedControlPoint
+      ?? visibleControlPoints[0]
+      ?? options.controlPoints.find((point) => point.materialType === materialType)
 
     setDrawerMode('input-create')
     setSelectedKardexInput(null)
     setKardexForm({
       ...emptyKardexInputForm,
       material_type: materialType,
-      material_id: materialId ?? firstMaterial?.id ?? '',
+      material_id: selectedMaterialId,
       control_date_id: controlDateId ?? firstControlPoint?.id ?? '',
+      total_bodega: String(getInventoryBalance(selectedMaterialId)),
     })
     setReason('Registro de input Kardex por tipo de material')
     setError(null)
@@ -311,18 +570,33 @@ export function KardexPage() {
 
   function handleDrawerMaterialTypeChange(materialType: string) {
     const firstMaterial = options.materials.find((material) => material.materialType === materialType)
+    const firstMaterialId = firstMaterial?.id ?? ''
     const firstControlPoint = options.controlPoints.find((point) => point.materialType === materialType)
 
     setKardexForm({
       ...kardexForm,
       material_type: materialType,
-      material_id: firstMaterial?.id ?? '',
+      material_id: firstMaterialId,
       control_date_id: firstControlPoint?.id ?? '',
+      total_bodega: drawerMode === 'input-create' ? String(getInventoryBalance(firstMaterialId)) : kardexForm.total_bodega,
+    })
+  }
+
+  function handleDrawerMaterialChange(materialId: string) {
+    const material = options.materials.find((item) => item.id === materialId)
+
+    setKardexForm({
+      ...kardexForm,
+      material_id: materialId,
+      material_type: material?.materialType ?? kardexForm.material_type,
+      total_bodega: drawerMode === 'input-create' ? String(getInventoryBalance(materialId)) : kardexForm.total_bodega,
     })
   }
 
   const drawerMaterials = options.materials.filter((material) => material.materialType === kardexForm.material_type)
-  const drawerControlPoints = options.controlPoints.filter((point) => point.materialType === kardexForm.material_type)
+  const drawerControlPoints = options.controlPoints
+    .filter((point) => point.materialType === kardexForm.material_type)
+    .sort(sortControlPoints)
 
   return (
     <>
@@ -334,33 +608,35 @@ export function KardexPage() {
             <option key={type.materialType} value={type.materialType}>{type.label} · {type.materialCount} materiales</option>
           ))}
         </select>
-        <select className="filter-select" value={selectedControlPoint?.id ?? ''} onChange={(event) => setSelectedControlPointId(event.target.value)} disabled={!visibleControlPoints.length}>
-          <option value="">Selecciona control...</option>
+        <select
+          className="filter-select"
+          value={visibleControlPoints.length ? selectedControlPointId || 'all' : ''}
+          onChange={(event) => setSelectedControlPointId(event.target.value)}
+          disabled={!visibleControlPoints.length}
+        >
+          <option value="">Sin controles</option>
+          <option value="all">Todos los controles del tipo</option>
           {visibleControlPoints.map((point) => (
-            <option key={point.id} value={point.id}>Control {point.controlNumber} · {formatDate(point.controlDate)}</option>
-          ))}
-        </select>
-        <select className="filter-select" value={selectedMaterial} onChange={(event) => setSelectedMaterial(event.target.value)}>
-          <option value="all">Todos los materiales del tipo</option>
-          {visibleMaterials.map((material) => (
-            <option key={material.id} value={material.id}>{material.code} · {material.name}</option>
+            <option key={point.id} value={point.id}>
+              {formatMonthTitle(point.periodMonth)} · {formatControlWeekLabel(point.controlDate)} · {formatControlPointLabel(point)} · {formatDate(point.controlDate)}
+            </option>
           ))}
         </select>
         <input
           className="search-input"
-          placeholder="Buscar material, fecha o fecha de control..."
+          placeholder="Buscar material, mes, control o fecha..."
           value={search}
           onChange={(event) => setSearch(event.target.value)}
         />
         <button className="btn btn-secondary" type="button" onClick={() => void loadKardex()}>Recargar</button>
-        <button className="btn btn-primary" type="button" onClick={() => openCreateInput()}>+ Input Kardex</button>
+        <button className="btn btn-primary" type="button" onClick={() => openCreateInput()} disabled={!visibleControlPoints.length}>+ Input Kardex</button>
       </div>
 
       {error ? <div className="auth-alert error" style={{ marginBottom: 16 }}>{error}</div> : null}
       {feedback ? <div className="auth-alert success" style={{ marginBottom: 16 }}>{feedback}</div> : null}
 
       <div className="planning-note">
-        <strong>Fechas desde GANTT:</strong> aquí no se crean fechas. El Kardex toma las fechas de control configuradas en GANTT y los aplica a todos los materiales del tipo seleccionado.
+        <strong>Fechas desde GANTT:</strong> aquí no se crean fechas. El Kardex agrupa por mes y despliega las ramas de control configuradas en GANTT para el tipo de material seleccionado.
       </div>
 
       <div className="kardex-control-summary">
@@ -369,16 +645,16 @@ export function KardexPage() {
           <strong>{selectedTypeOption?.label ?? 'Sin tipo seleccionado'}</strong>
         </div>
         <div className="summary-item">
-          <span>Control</span>
-          <strong>{selectedControlPoint ? `Control ${selectedControlPoint.controlNumber}` : 'Sin control'}</strong>
+          <span>Meses con control</span>
+          <strong>{kardexGroupsByMonth.length}</strong>
         </div>
         <div className="summary-item">
-          <span>Fecha</span>
-          <strong>{selectedControlPoint ? formatDate(selectedControlPoint.controlDate) : '-'}</strong>
+          <span>Controles visibles</span>
+          <strong>{visibleControlsCount}</strong>
         </div>
         <div className="summary-item">
           <span>Materiales cubiertos</span>
-          <strong>{kardexDetailRows.length} materiales</strong>
+          <strong>{summaryMaterials.length} materiales</strong>
         </div>
         <div className="summary-item">
           <span>Registros Kardex</span>
@@ -387,116 +663,208 @@ export function KardexPage() {
       </div>
 
       <div className="kpi-row compact">
-        <KpiCard label="Total bodega" value={formatNumber(totalBodega, 2)} sub="materiales filtrados" />
-        <KpiCard label="Consumo proyectado" value={formatNumber(totalConsumoProyectado, 2)} sub="desde BOM + control" />
-        <KpiCard label="Tránsito" value={formatNumber(totalTransito, 2)} sub="suma del tipo" />
-        <KpiCard label="Pendiente por pedir" value={formatNumber(totalPendiente, 2)} sub="faltante operativo" />
+        <KpiCard label="Total bodega" value={formatNumber(totals.totalBodega, 2)} sub="materiales filtrados" />
+        <KpiCard label="Consumo proyectado" value={formatNumber(totals.totalConsumoProyectado, 2)} sub="desde BOM + control" />
+        <KpiCard label="Tránsito" value={formatNumber(totals.totalTransito, 2)} sub="suma del tipo" />
+        <KpiCard label="Pendiente por pedir" value={formatNumber(totals.totalPendiente, 2)} sub="faltante operativo" />
       </div>
 
-      <TableShell title="Resumen Kardex del tipo" subtitle="Suma de todos los materiales cubiertos por la fecha de control seleccionada">
-        <table>
+      <TableShell title="Kardex consolidado por tipo de material" subtitle="La lectura queda como matriz: fecha arriba, mes debajo, control debajo y los indicadores operativos como filas.">
+        <div className="kardex-table-toolbar">
+          <div className="kardex-table-toolbar__group">
+            <span className="kardex-table-toolbar__label">Indicadores izquierda</span>
+            <button className="btn btn-secondary btn-sm" type="button" onClick={() => setIsSummaryLeftPinned((current) => !current)} disabled={isSummaryLeftHidden}>
+              {isSummaryLeftPinned ? 'Liberar' : 'Fijar'}
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              type="button"
+              onClick={() => {
+                setIsSummaryLeftHidden((current) => !current)
+                if (isSummaryLeftHidden) setIsSummaryLeftPinned(true)
+              }}
+            >
+              {isSummaryLeftHidden ? 'Mostrar indicadores' : 'Ocultar indicadores'}
+            </button>
+          </div>
+          <span className="form-hint">Desliza horizontalmente para revisar meses y controles. Si tienes muchos puntos de control, puedes liberar u ocultar la columna izquierda.</span>
+        </div>
+        <table className={`kardex-target-table ${isSummaryLeftPinned ? 'kardex-left-pinned' : 'kardex-left-scroll'} ${isSummaryLeftHidden ? 'kardex-left-hidden' : ''}`}>
           <thead>
-            <tr>
-              <th>Tipo</th>
+            <tr className="kardex-date-header-row">
+              <th className="kardex-row-header">Fecha control</th>
+              {kardexPivotColumns.map((column) => (
+                <th key={`fecha-${column.key}`}>{formatDate(column.control.point.controlDate)}</th>
+              ))}
+            </tr>
+            <tr className="kardex-month-header-row">
+              <th>Mes</th>
+              {kardexMonthHeaderGroups.map((monthGroup) => (
+                <th key={`mes-${monthGroup.key}`} colSpan={monthGroup.colSpan}>
+                  {monthGroup.label}
+                </th>
+              ))}
+            </tr>
+            <tr className="kardex-control-header-row">
               <th>Control</th>
-              <th>Fecha control</th>
-              <th>Total bodega</th>
-              <th>Pedido</th>
-              <th>Tránsito</th>
-              <th>Stock seguridad</th>
-              <th>Industrialización</th>
-              <th>Consumo proyectado</th>
-              <th>Entrega producción</th>
-              <th>Pendiente por pedir</th>
-              <th>Inventario final</th>
-              <th>Balance disponible</th>
-              <th>Estado</th>
+              {kardexPivotColumns.map((column) => (
+                <th key={`control-${column.key}`}>Control {column.control.point.controlNumber}</th>
+              ))}
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={14}>Cargando Kardex...</td></tr>
-            ) : !selectedControlPoint ? (
-              <tr><td colSpan={14}>Selecciona un tipo de material con fecha de control disponible.</td></tr>
+              <tr><td colSpan={kardexPivotColSpan}>Cargando Kardex...</td></tr>
+            ) : kardexGroupsByMonth.length === 0 ? (
+              <tr><td colSpan={kardexPivotColSpan}>No hay puntos de control para el tipo y filtros seleccionados. Créalos primero en GANTT.</td></tr>
             ) : (
-              <tr className="kardex-total-row">
-                <td>{selectedTypeOption?.label ?? selectedMaterialType}</td>
-                <td>Control {selectedControlPoint.controlNumber} · {selectedControlPoint.controlLabel}</td>
-                <td>{formatDate(selectedControlPoint.controlDate)}</td>
-                <td>{formatQuantity(totalBodega, selectedTypeOption?.unit ?? '')}</td>
-                <td>{formatQuantity(totalPedido, selectedTypeOption?.unit ?? '')}</td>
-                <td>{formatQuantity(totalTransito, selectedTypeOption?.unit ?? '')}</td>
-                <td>{formatQuantity(totalStockSeguridad, selectedTypeOption?.unit ?? '')}</td>
-                <td>{formatQuantity(totalIndustrializacion, selectedTypeOption?.unit ?? '')}</td>
-                <td>{formatQuantity(totalConsumoProyectado, selectedTypeOption?.unit ?? '')}</td>
-                <td>{formatQuantity(totalEntregaProduccion, selectedTypeOption?.unit ?? '')}</td>
-                <td>{formatQuantity(totalPendiente, selectedTypeOption?.unit ?? '')}</td>
-                <td>{formatQuantity(totalInventarioFinal, selectedTypeOption?.unit ?? '')}</td>
-                <td>{formatQuantity(totalDisponible, selectedTypeOption?.unit ?? '')}</td>
-                <td><Badge>{registeredRowsCount === 0 ? 'Sin registrar' : totalDisponible < 0 ? 'Faltante' : 'Activo'}</Badge></td>
-              </tr>
+              <>
+                <tr className="kardex-consolidated-row">
+                  <td colSpan={kardexPivotColSpan}>
+                    Consolidado · {selectedTypeOption?.label ?? 'Tipo de material'}
+                  </td>
+                </tr>
+                {getKardexTargetMetrics(selectedTypeOption?.label ?? 'Material', selectedTypeOption?.unit ?? '').map((metric) => (
+                  <tr key={metric.key} className={metric.className}>
+                    <td className="kardex-pivot-label"><strong>{metric.label}</strong></td>
+                    {kardexPivotColumns.map((column) => (
+                      <td key={`${metric.key}-${column.key}`}>{metric.getValue(column)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </>
             )}
           </tbody>
         </table>
       </TableShell>
 
-      <TableShell title="Detalle Kardex por material" subtitle="Todos los materiales del tipo seleccionado comparten la misma fecha de control">
-        <table>
+      <TableShell title="Kardex por material" subtitle="Mismo formato del Kardex general, con filtros independientes por tipo de material y selección múltiple de materiales.">
+        <div className="filter-bar smart-filter nested-filter" style={{ marginBottom: 12 }}>
+          <span className="filter-label">Filtros material</span>
+          <select className="filter-select" value={detailMaterialType} onChange={(event) => handleDetailMaterialTypeChange(event.target.value)}>
+            <option value="">Todos los tipos</option>
+            {options.materialTypes.map((type) => (
+              <option key={type.materialType} value={type.materialType}>{type.label} · {type.materialCount} materiales</option>
+            ))}
+          </select>
+          <select
+            className="filter-select"
+            multiple
+            size={Math.min(Math.max(detailMaterialsForType.length, 3), 6)}
+            value={detailMaterialIds}
+            onChange={(event) => handleDetailMaterialsChange(Array.from(event.target.selectedOptions).map((option) => option.value))}
+          >
+            {detailMaterialsForType.map((material) => (
+              <option key={material.id} value={material.id}>{material.code} · {material.name}</option>
+            ))}
+          </select>
+          <button className="btn btn-secondary" type="button" onClick={() => handleDetailMaterialsChange([])}>Ver todos</button>
+          <span className="form-hint">{selectedDetailTypeOption?.label ?? 'Todos los tipos'} · {detailFilteredMaterials.length} materiales visibles · {detailMaterialIds.length === 0 ? 'todos los materiales' : `${detailMaterialIds.length} materiales seleccionados`}</span>
+        </div>
+        <div className="kardex-table-toolbar">
+          <div className="kardex-table-toolbar__group">
+            <span className="kardex-table-toolbar__label">Indicadores izquierda</span>
+            <button className="btn btn-secondary btn-sm" type="button" onClick={() => setIsDetailLeftPinned((current) => !current)} disabled={isDetailLeftHidden}>
+              {isDetailLeftPinned ? 'Liberar' : 'Fijar'}
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              type="button"
+              onClick={() => {
+                setIsDetailLeftHidden((current) => !current)
+                if (isDetailLeftHidden) setIsDetailLeftPinned(true)
+              }}
+            >
+              {isDetailLeftHidden ? 'Mostrar indicadores' : 'Ocultar indicadores'}
+            </button>
+          </div>
+          <span className="form-hint">Este control solo aplica al Kardex por material. Puedes ocultar la columna izquierda para revisar muchos meses sin perder espacio.</span>
+        </div>
+        <table className={`kardex-target-table ${isDetailLeftPinned ? 'kardex-left-pinned' : 'kardex-left-scroll'} ${isDetailLeftHidden ? 'kardex-left-hidden' : ''}`}>
           <thead>
-            <tr>
-              <th>Material</th>
-              <th>Tipo</th>
+            <tr className="kardex-date-header-row">
+              <th className="kardex-row-header">Fecha control</th>
+              {detailKardexPivotColumns.map((column) => (
+                <th key={`detail-fecha-${column.key}`}>{formatDate(column.control.point.controlDate)}</th>
+              ))}
+            </tr>
+            <tr className="kardex-month-header-row">
+              <th>Mes</th>
+              {detailKardexMonthHeaderGroups.map((monthGroup) => (
+                <th key={`detail-mes-${monthGroup.key}`} colSpan={monthGroup.colSpan}>
+                  {monthGroup.label}
+                </th>
+              ))}
+            </tr>
+            <tr className="kardex-control-header-row">
               <th>Control</th>
-              <th>Fecha control</th>
-              <th>Total bodega</th>
-              <th>Pedido</th>
-              <th>Tránsito</th>
-              <th>Stock seguridad</th>
-              <th>Industrialización</th>
-              <th>Consumo proyectado</th>
-              <th>Entrega producción</th>
-              <th>Pendiente por pedir</th>
-              <th>Inventario final</th>
-              <th>Balance disponible</th>
-              <th>Notas</th>
-              <th>Estado</th>
-              <th>Acción</th>
+              {detailKardexPivotColumns.map((column) => (
+                <th key={`detail-control-${column.key}`}>Control {column.control.point.controlNumber}</th>
+              ))}
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
-              <tr><td colSpan={17}>Cargando Kardex...</td></tr>
-            ) : !selectedControlPoint ? (
-              <tr><td colSpan={17}>No hay fecha de control para el tipo seleccionado. Créala primero en GANTT.</td></tr>
-            ) : kardexDetailRows.length === 0 ? (
-              <tr><td colSpan={17}>No hay materiales para el tipo y filtros seleccionados.</td></tr>
-            ) : kardexDetailRows.map((row) => (
-              <tr key={row.id}>
-                <td>{row.materialCode} · {row.materialName}</td>
-                <td>{row.materialTypeLabel}</td>
-                <td>Control {row.controlNumber}</td>
-                <td>{formatDate(row.controlDate)}</td>
-                <td>{formatQuantity(row.totalBodega, row.unit)}</td>
-                <td>{formatQuantity(row.pedido, row.unit)}</td>
-                <td>{formatQuantity(row.transito, row.unit)}</td>
-                <td>{formatQuantity(row.stockSeguridad, row.unit)}</td>
-                <td>{formatQuantity(row.industrializacion, row.unit)}</td>
-                <td>{formatQuantity(row.projectedConsumption, row.unit)}</td>
-                <td>{formatQuantity(row.entregaProduccion, row.unit)}</td>
-                <td>{formatQuantity(row.pendientePorPedir, row.unit)}</td>
-                <td>{formatQuantity(row.inventarioFinal, row.unit)}</td>
-                <td>{formatQuantity(row.availableBalance, row.unit)}</td>
-                <td>{row.notes ?? '-'}</td>
-                <td><Badge>{row.isRegistered ? (row.availableBalance < 0 ? 'Faltante' : 'Activo') : 'Sin registrar'}</Badge></td>
-                <td>
-                  {row.isRegistered ? (
-                    <button className="action-btn" type="button" onClick={() => openEditInput(row)}>Editar</button>
-                  ) : (
-                    <button className="action-btn" type="button" onClick={() => openCreateInput(row.materialId, row.controlDateId)}>Registrar</button>
-                  )}
-                </td>
-              </tr>
-            ))}
+              <tr><td colSpan={detailKardexPivotColSpan}>Cargando Kardex...</td></tr>
+            ) : detailKardexPivotColumns.length === 0 ? (
+              <tr><td colSpan={detailKardexPivotColSpan}>No hay puntos de control para el tipo y filtros seleccionados.</td></tr>
+            ) : detailFilteredMaterials.length === 0 ? (
+              <tr><td colSpan={detailKardexPivotColSpan}>No hay materiales para los filtros seleccionados.</td></tr>
+            ) : (
+              detailFilteredMaterials.map((material) => (
+                <Fragment key={`detail-material-matrix-${material.id}`}>
+                  <tr className="kardex-consolidated-row kardex-material-section-row">
+                    <td colSpan={detailKardexPivotColSpan}>
+                      {material.code} · {material.name} · {material.materialTypeLabel}
+                    </td>
+                  </tr>
+                  {getKardexMaterialTargetMetrics(material.name, material.unit).map((metric) => (
+                    <tr key={`${material.id}-${metric.key}`} className={metric.className}>
+                      <td className="kardex-pivot-label"><strong>{metric.label}</strong></td>
+                      {detailKardexPivotColumns.map((column) => {
+                        const row = findMaterialRowForColumn(column, material.id)
+                        return <td key={`${material.id}-${metric.key}-${column.key}`}>{metric.getValue(row)}</td>
+                      })}
+                    </tr>
+                  ))}
+                  <tr>
+                    <td className="kardex-pivot-label"><strong>Registros</strong></td>
+                    {detailKardexPivotColumns.map((column) => {
+                      const row = findMaterialRowForColumn(column, material.id)
+                      return <td key={`${material.id}-registro-${column.key}`}>{row?.isRegistered ? '1/1' : '0/1'}</td>
+                    })}
+                  </tr>
+                  <tr>
+                    <td className="kardex-pivot-label"><strong>Estado</strong></td>
+                    {detailKardexPivotColumns.map((column) => {
+                      const row = findMaterialRowForColumn(column, material.id)
+                      return (
+                        <td key={`${material.id}-estado-${column.key}`}>
+                          <Badge>{row ? (row.isRegistered ? (row.availableBalance < 0 ? 'Faltante' : 'Activo') : 'Sin registrar') : 'Sin material'}</Badge>
+                        </td>
+                      )
+                    })}
+                  </tr>
+                  <tr>
+                    <td className="kardex-pivot-label"><strong>Acción</strong></td>
+                    {detailKardexPivotColumns.map((column) => {
+                      const row = findMaterialRowForColumn(column, material.id)
+                      return (
+                        <td key={`${material.id}-accion-${column.key}`}>
+                          {row ? (
+                            row.isRegistered ? (
+                              <button className="action-btn" type="button" onClick={() => openEditInput(row)}>Editar</button>
+                            ) : (
+                              <button className="action-btn" type="button" onClick={() => openCreateInput(row.materialId, row.controlDateId)}>Registrar</button>
+                            )
+                          ) : '-'}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                </Fragment>
+              ))
+            )}
           </tbody>
         </table>
       </TableShell>
@@ -528,7 +896,7 @@ export function KardexPage() {
 
           <div className="form-group">
             <label>Material</label>
-            <select className="form-control" value={kardexForm.material_id} onChange={(event) => setKardexForm({ ...kardexForm, material_id: event.target.value })}>
+            <select className="form-control" value={kardexForm.material_id} onChange={(event) => handleDrawerMaterialChange(event.target.value)}>
               <option value="">Selecciona...</option>
               {drawerMaterials.map((material) => (
                 <option key={material.id} value={material.id}>{material.code} · {material.name}</option>
@@ -542,7 +910,7 @@ export function KardexPage() {
               <option value="">Selecciona...</option>
               {drawerControlPoints.map((point) => (
                 <option key={point.id} value={point.id}>
-                  {formatDateMonth(point.periodMonth)} · Corte {point.controlNumber} · {formatDate(point.controlDate)} · {point.controlLabel}
+                  {formatDateMonth(point.periodMonth)} · {formatControlWeekLabel(point.controlDate)} · {formatControlPointLabel(point)} · {formatDate(point.controlDate)}
                 </option>
               ))}
             </select>
@@ -552,6 +920,7 @@ export function KardexPage() {
             <div className="form-group">
               <label>Total bodega</label>
               <input className="form-control" type="number" step="0.0001" value={kardexForm.total_bodega} onChange={(event) => setKardexForm({ ...kardexForm, total_bodega: event.target.value })} />
+              <small className="form-hint">Se precarga desde Inventario de bodega del material.</small>
             </div>
             <div className="form-group">
               <label>Pedido</label>
@@ -606,6 +975,197 @@ export function KardexPage() {
   )
 }
 
+
+function buildKardexPivotColumns(groups: KardexMonthGroup[]): KardexPivotColumn[] {
+  return groups.flatMap((group) => groupControlBranchesByWeek(group.controls).flatMap((week) => (
+    week.controls.map((control) => ({
+      key: `${group.month}-${week.weekKey}-${control.point.id}`,
+      label: `${group.monthLabel} · ${week.weekLabel} · ${formatControlPointLabel(control.point)}`,
+      group,
+      week,
+      control,
+    }))
+  )))
+}
+
+function buildKardexMonthHeaderGroups(columns: KardexPivotColumn[]) {
+  return columns.reduce<Array<{ key: string; label: string; colSpan: number }>>((acc, column) => {
+    const monthKey = column.group.month || 'sin-mes'
+    const lastGroup = acc[acc.length - 1]
+
+    if (lastGroup?.key === monthKey) {
+      lastGroup.colSpan += 1
+      return acc
+    }
+
+    acc.push({
+      key: monthKey,
+      label: formatShortMonthTitle(column.group.month),
+      colSpan: 1,
+    })
+
+    return acc
+  }, [])
+}
+
+function getKardexTargetMetrics(materialTypeLabel: string, unit: string): KardexPivotMetric[] {
+  const unitSuffix = unit ? ` (${unit})` : ''
+  const normalizedMaterialType = materialTypeLabel.trim() || 'Material'
+  const stockLineLabel = `${normalizedMaterialType} bodega + tránsito + pedido`.toUpperCase()
+
+  return [
+    {
+      key: 'total-bodega',
+      label: `Total bodega${unitSuffix}`,
+      getValue: (column) => formatNumber(column.control.totals.totalBodega, 2),
+    },
+    {
+      key: 'pedido',
+      label: `Pedido${unitSuffix}`,
+      getValue: (column) => formatNumber(column.control.totals.totalPedido, 2),
+    },
+    {
+      key: 'transito',
+      label: `Tránsito${unitSuffix}`,
+      getValue: (column) => formatNumber(column.control.totals.totalTransito, 2),
+    },
+    {
+      key: 'bodega-transito-pedido',
+      label: stockLineLabel,
+      className: 'kardex-calculated-row',
+      getValue: (column) => formatNumber(column.control.totals.totalBodega + column.control.totals.totalPedido + column.control.totals.totalTransito, 2),
+    },
+    {
+      key: 'pendiente-por-pedir',
+      label: 'Pendiente por pedir',
+      className: 'kardex-alert-row',
+      getValue: (column) => formatNumber(column.control.totals.totalPendiente, 2),
+    },
+    {
+      key: 'consumo-proyectado',
+      label: `Consumo proyectado${unitSuffix}`,
+      className: 'kardex-consumption-row',
+      getValue: (column) => formatNumber(column.control.totals.totalConsumoProyectado, 2),
+    },
+    {
+      key: 'inventario-final',
+      label: `Inventario final mes${unitSuffix}`,
+      className: 'kardex-final-row',
+      getValue: (column) => formatNumber(column.control.totals.totalInventarioFinal, 2),
+    },
+    {
+      key: 'entrega-produccion',
+      label: `Entrega producción${unitSuffix}`,
+      className: 'kardex-production-row',
+      getValue: (column) => formatNumber(column.control.totals.totalEntregaProduccion, 2),
+    },
+    {
+      key: 'stock-seguridad',
+      label: `Stock seguridad${unitSuffix}`,
+      className: 'kardex-security-row',
+      getValue: (column) => formatNumber(column.control.totals.totalStockSeguridad, 2),
+    },
+    {
+      key: 'inventario-final-reserva-stock',
+      label: `Inventario final industrialización + stock${unitSuffix}`,
+      className: 'kardex-net-final-row',
+      getValue: (column) => formatNumber(
+        column.control.totals.totalInventarioFinal
+          - column.control.totals.totalIndustrializacion
+          - column.control.totals.totalStockSeguridad,
+        2,
+      ),
+    },
+    {
+      key: 'registros',
+      label: 'Registros',
+      getValue: (column) => `${column.control.registeredRowsCount}/${column.control.rows.length}`,
+    },
+    {
+      key: 'estado',
+      label: 'Estado',
+      getValue: (column) => getKardexStatusLabel(column.control.totals.totalDisponible, column.control.registeredRowsCount),
+    },
+  ]
+}
+
+
+function getKardexMaterialTargetMetrics(materialName: string, unit: string): KardexMaterialPivotMetric[] {
+  const unitSuffix = unit ? ` (${unit})` : ''
+  const normalizedMaterialName = materialName.trim() || 'Material'
+  const stockLineLabel = `${normalizedMaterialName} bodega + tránsito + pedido`.toUpperCase()
+
+  return [
+    {
+      key: 'total-bodega',
+      label: `Total bodega${unitSuffix}`,
+      getValue: (row) => row ? formatNumber(row.totalBodega, 2) : '-',
+    },
+    {
+      key: 'pedido',
+      label: `Pedido${unitSuffix}`,
+      getValue: (row) => row ? formatNumber(row.pedido, 2) : '-',
+    },
+    {
+      key: 'transito',
+      label: `Tránsito${unitSuffix}`,
+      getValue: (row) => row ? formatNumber(row.transito, 2) : '-',
+    },
+    {
+      key: 'bodega-transito-pedido',
+      label: stockLineLabel,
+      className: 'kardex-calculated-row',
+      getValue: (row) => row ? formatNumber(row.totalBodega + row.pedido + row.transito, 2) : '-',
+    },
+    {
+      key: 'pendiente-por-pedir',
+      label: 'Pendiente por pedir',
+      className: 'kardex-alert-row',
+      getValue: (row) => row ? formatNumber(row.pendientePorPedir, 2) : '-',
+    },
+    {
+      key: 'consumo-proyectado',
+      label: `Consumo proyectado${unitSuffix}`,
+      className: 'kardex-consumption-row',
+      getValue: (row) => row ? formatNumber(row.projectedConsumption, 2) : '-',
+    },
+    {
+      key: 'inventario-final',
+      label: `Inventario final mes${unitSuffix}`,
+      className: 'kardex-final-row',
+      getValue: (row) => row ? formatNumber(row.inventarioFinal, 2) : '-',
+    },
+    {
+      key: 'entrega-produccion',
+      label: `Entrega producción${unitSuffix}`,
+      className: 'kardex-production-row',
+      getValue: (row) => row ? formatNumber(row.entregaProduccion, 2) : '-',
+    },
+    {
+      key: 'stock-seguridad',
+      label: `Stock seguridad${unitSuffix}`,
+      className: 'kardex-security-row',
+      getValue: (row) => row ? formatNumber(row.stockSeguridad, 2) : '-',
+    },
+    {
+      key: 'inventario-final-reserva-stock',
+      label: `Inventario final industrialización + stock${unitSuffix}`,
+      className: 'kardex-net-final-row',
+      getValue: (row) => row ? formatNumber(row.inventarioFinal - row.industrializacion - row.stockSeguridad, 2) : '-',
+    },
+    {
+      key: 'notas',
+      label: 'Notas',
+      getValue: (row) => row?.notes?.trim() || '-',
+    },
+  ]
+}
+
+function findMaterialRowForColumn(column: KardexPivotColumn, materialId: string) {
+  return column.control.rows.find((row) => row.materialId === materialId)
+}
+
+
 function validateKardexForm(form: KardexInputFormInput) {
   if (!form.material_type || !form.material_id || !form.control_date_id) {
     throw new Error('Tipo de material, material y fecha de control GANTT son obligatorios.')
@@ -630,4 +1190,138 @@ function validateKardexForm(form: KardexInputFormInput) {
       throw new Error(`${label} no puede ser negativo.`)
     }
   }
+}
+
+function aggregateKardexRows(rows: KardexDisplayRow[]): KardexTotals {
+  return rows.reduce<KardexTotals>((acc, row) => ({
+    totalBodega: acc.totalBodega + row.totalBodega,
+    totalPedido: acc.totalPedido + row.pedido,
+    totalTransito: acc.totalTransito + row.transito,
+    totalStockSeguridad: acc.totalStockSeguridad + row.stockSeguridad,
+    totalIndustrializacion: acc.totalIndustrializacion + row.industrializacion,
+    totalDisponible: acc.totalDisponible + row.availableBalance,
+    totalConsumoProyectado: acc.totalConsumoProyectado + row.projectedConsumption,
+    totalEntregaProduccion: acc.totalEntregaProduccion + row.entregaProduccion,
+    totalPendiente: acc.totalPendiente + row.pendientePorPedir,
+    totalInventarioFinal: acc.totalInventarioFinal + row.inventarioFinal,
+  }), { ...emptyTotals })
+}
+
+function getKardexStatusLabel(totalDisponible: number, registeredRowsCount: number) {
+  if (registeredRowsCount === 0) return 'Sin registrar'
+  return totalDisponible < 0 ? 'Faltante' : 'Activo'
+}
+
+function formatControlPointLabel(point: KardexControlPointView) {
+  const baseLabel = `Control ${point.controlNumber}`
+  const customLabel = point.controlLabel?.trim()
+
+  if (!customLabel || customLabel.toLowerCase() === baseLabel.toLowerCase()) {
+    return baseLabel
+  }
+
+  return `${baseLabel} · ${customLabel}`
+}
+
+function sortControlPoints(a: KardexControlPointView, b: KardexControlPointView) {
+  const monthOrder = a.periodMonth.localeCompare(b.periodMonth)
+  if (monthOrder !== 0) return monthOrder
+
+  const controlOrder = a.controlNumber - b.controlNumber
+  if (controlOrder !== 0) return controlOrder
+
+  return a.controlDate.localeCompare(b.controlDate)
+}
+
+function formatMonthTitle(value: string | null | undefined) {
+  if (!value) return 'Sin mes'
+
+  const date = new Date(`${value.slice(0, 10)}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return value
+
+  const label = date.toLocaleDateString('es-CO', {
+    year: 'numeric',
+    month: 'long',
+  })
+
+  return label.charAt(0).toUpperCase() + label.slice(1)
+}
+
+function formatShortMonthTitle(value: string | null | undefined) {
+  if (!value) return 'Sin mes'
+
+  const date = new Date(`${value.slice(0, 10)}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return value
+
+  const label = date.toLocaleDateString('es-CO', {
+    month: 'long',
+  })
+
+  return label.charAt(0).toUpperCase() + label.slice(1)
+}
+
+
+function groupControlBranchesByWeek(controls: KardexControlBranch[]): KardexWeekGroup[] {
+  const groups = controls.reduce<Record<string, KardexWeekGroup>>((acc, control) => {
+    const weekNumber = getOperationalWeekNumber(control.point.controlDate)
+    const year = getDateYear(control.point.controlDate) || control.point.periodMonth.slice(0, 4) || 'sin-anio'
+    const weekKey = `${year}-W${String(weekNumber).padStart(2, '0')}`
+    const current = acc[weekKey] ?? {
+      weekKey,
+      weekNumber,
+      weekLabel: formatControlWeekLabel(control.point.controlDate),
+      controls: [],
+    }
+
+    current.controls.push(control)
+    acc[weekKey] = current
+    return acc
+  }, {})
+
+  return Object.values(groups)
+    .map((group) => ({
+      ...group,
+      controls: [...group.controls].sort((a, b) => sortControlPoints(a.point, b.point)),
+    }))
+    .sort((a, b) => a.weekNumber - b.weekNumber || a.weekKey.localeCompare(b.weekKey))
+}
+
+function formatControlWeekLabel(dateValue: string | null | undefined) {
+  const weekNumber = getOperationalWeekNumber(dateValue)
+  return weekNumber ? `Semana ${weekNumber}` : 'Semana sin fecha'
+}
+
+function getOperationalWeekNumber(dateValue: string | null | undefined) {
+  const date = parseDateOnlyUtc(dateValue)
+  if (!date) return 0
+
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1))
+  const dayOfWeek = yearStart.getUTCDay()
+  const daysUntilNextMonday = dayOfWeek === 1 ? 7 : (8 - dayOfWeek) % 7
+  const weekTwoStart = new Date(yearStart)
+  weekTwoStart.setUTCDate(yearStart.getUTCDate() + daysUntilNextMonday)
+
+  if (date < weekTwoStart) return 1
+
+  const daysFromWeekTwo = Math.floor((date.getTime() - weekTwoStart.getTime()) / 86_400_000)
+  return 2 + Math.floor(daysFromWeekTwo / 7)
+}
+
+function getDateYear(dateValue: string | null | undefined) {
+  const date = parseDateOnlyUtc(dateValue)
+  return date ? String(date.getUTCFullYear()) : ''
+}
+
+function parseDateOnlyUtc(dateValue: string | null | undefined) {
+  if (!dateValue) return null
+
+  const [year, month, day] = dateValue.slice(0, 10).split('-').map(Number)
+  if (!year || !month || !day) return null
+
+  const date = new Date(Date.UTC(year, month - 1, day))
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function buildKardexKey(controlDateId: string, materialId: string) {
+  return `${controlDateId}-${materialId}`
 }

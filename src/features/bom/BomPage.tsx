@@ -197,6 +197,9 @@ export function BomPage() {
   const [bomForm, setBomForm] = useState<BomLineFormInput>(emptyBomForm)
   const [selectedVersion, setSelectedVersion] = useState<VersionMixView | null>(null)
   const [selectedBomLine, setSelectedBomLine] = useState<BomLineView | null>(null)
+  const [lockedVersionFitId, setLockedVersionFitId] = useState<string | null>(null)
+  const [lockedBomVersionId, setLockedBomVersionId] = useState<string | null>(null)
+  const [bomMaterialTypeFilter, setBomMaterialTypeFilter] = useState('')
   const [reason, setReason] = useState('')
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
@@ -346,13 +349,71 @@ export function BomPage() {
   const isProjectedMixComplete = Math.round(projectedMixTotal * 100) / 100 === 100
   const isProjectedMixExceeded = projectedMixTotal > 100
 
+  const isVersionFitLocked = drawerMode === 'version-edit' || Boolean(lockedVersionFitId)
+  const isBomVersionLocked = drawerMode === 'bom-edit' || Boolean(lockedBomVersionId)
+
+  const materialTypeOptions = useMemo(() => (
+    uniqueBy(options.materials, (material) => material.material_type)
+      .map((material) => ({
+        value: material.material_type,
+        label: formatMaterialTypeLabel(material.material_type),
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'es'))
+  ), [options.materials])
+
+  const filteredBomMaterials = useMemo(() => {
+    if (!bomMaterialTypeFilter) return options.materials
+    return options.materials.filter((material) => material.material_type === bomMaterialTypeFilter)
+  }, [bomMaterialTypeFilter, options.materials])
+
+  function getFitLabel(fitId: string) {
+    const fit = options.fits.find((item) => item.id === fitId)
+    return fit ? `${fit.code} · ${fit.name}` : 'FIT seleccionado'
+  }
+
+  function getFitVersionLabel(versionId: string) {
+    const version = options.fitVersions.find((item) => item.id === versionId)
+    return version ? `${version.collectionCode} · ${version.fitName} · ${version.versionCode}` : 'Versión seleccionada'
+  }
+
+  function handleBomMaterialTypeChange(materialType: string) {
+    setBomMaterialTypeFilter(materialType)
+    setBomForm((current) => ({ ...current, material_id: '' }))
+  }
+
+  function handleBomMaterialChange(materialId: string) {
+    const material = options.materials.find((item) => item.id === materialId)
+    setBomMaterialTypeFilter(material?.material_type ?? '')
+    setBomForm((current) => ({ ...current, material_id: materialId }))
+  }
+
+  function getNextVersionCode(fitId: string) {
+    if (!fitId) return ''
+
+    const versionCodes = [
+      ...versionMix.filter((mix) => mix.fitId === fitId).map((mix) => mix.versionCode),
+      ...options.fitVersions.filter((version) => version.fitId === fitId).map((version) => version.versionCode),
+    ]
+
+    const lastVersionNumber = versionCodes.reduce((max, code) => {
+      const match = code.trim().match(/^V(\d+)$/i)
+      return match ? Math.max(max, Number(match[1])) : max
+    }, 0)
+
+    return `V${lastVersionNumber + 1}`
+  }
+
   function openCreateVersion(prefilledFitId?: string) {
+    const initialFitId = prefilledFitId ?? options.fits[0]?.id ?? ''
+
     setDrawerMode('version-create')
     setSelectedVersion(null)
+    setLockedVersionFitId(prefilledFitId ?? null)
     setVersionForm({
       ...emptyVersionForm,
       collection_id: options.collections[0]?.id ?? '',
-      fit_id: prefilledFitId ?? options.fits[0]?.id ?? '',
+      fit_id: initialFitId,
+      version_code: getNextVersionCode(initialFitId),
       main_material_id: options.materials[0]?.id ?? '',
     })
     setReason('Creación de versión y mix porcentual desde BOM')
@@ -363,6 +424,7 @@ export function BomPage() {
   function openEditVersion(row: VersionMixView) {
     setDrawerMode('version-edit')
     setSelectedVersion(row)
+    setLockedVersionFitId(row.fitId)
     setVersionForm(versionToForm(row))
     setReason('Actualización de versión y mix porcentual desde BOM')
     setError(null)
@@ -372,11 +434,13 @@ export function BomPage() {
   function openCreateBomLine(prefilledVersionId?: string, prefilledPieceName = '') {
     setDrawerMode('bom-create')
     setSelectedBomLine(null)
+    setLockedBomVersionId(prefilledVersionId ?? null)
+    setBomMaterialTypeFilter('')
     setBomForm({
       ...emptyBomForm,
-      fit_version_id: prefilledVersionId ?? options.fitVersions[0]?.id ?? '',
+      fit_version_id: prefilledVersionId ?? '',
       piece_name: prefilledPieceName,
-      material_id: options.materials[0]?.id ?? '',
+      material_id: '',
     })
     setReason('Creación de pieza BOM')
     setError(null)
@@ -386,6 +450,8 @@ export function BomPage() {
   function openEditBomLine(row: BomLineView) {
     setDrawerMode('bom-edit')
     setSelectedBomLine(row)
+    setLockedBomVersionId(row.fitVersionId)
+    setBomMaterialTypeFilter(row.materialType)
     setBomForm(bomToForm(row, options))
     setReason('Actualización de pieza BOM')
     setError(null)
@@ -396,6 +462,9 @@ export function BomPage() {
     setDrawerMode(null)
     setSelectedVersion(null)
     setSelectedBomLine(null)
+    setLockedVersionFitId(null)
+    setLockedBomVersionId(null)
+    setBomMaterialTypeFilter('')
     setError(null)
   }
 
@@ -427,24 +496,29 @@ export function BomPage() {
     setError(null)
 
     try {
-      if (!versionForm.collection_id || !versionForm.fit_id || !versionForm.version_code.trim()) {
+      const effectiveVersionForm = {
+        ...versionForm,
+        version_code: versionForm.version_code.trim() || getNextVersionCode(versionForm.fit_id),
+      }
+
+      if (!effectiveVersionForm.collection_id || !effectiveVersionForm.fit_id || !effectiveVersionForm.version_code) {
         throw new Error('Colección, FIT y código de versión son obligatorios.')
       }
 
-      if (!versionForm.valid_from_month) {
+      if (!effectiveVersionForm.valid_from_month) {
         throw new Error('La vigencia desde es obligatoria.')
       }
 
-      if (versionForm.valid_to_month && versionForm.valid_to_month < versionForm.valid_from_month) {
+      if (effectiveVersionForm.valid_to_month && effectiveVersionForm.valid_to_month < effectiveVersionForm.valid_from_month) {
         throw new Error('La vigencia hasta no puede ser anterior a la vigencia desde.')
       }
 
-      const share = Number(versionForm.share_percentage)
+      const share = Number(effectiveVersionForm.share_percentage)
       if (Number.isNaN(share) || share < 0 || share > 100) {
         throw new Error('El porcentaje de participación debe estar entre 0 y 100.')
       }
 
-      if (versionForm.status === 'active' && isProjectedMixExceeded) {
+      if (effectiveVersionForm.status === 'active' && isProjectedMixExceeded) {
         throw new Error(`El mix vigente del FIT supera 100% para la vigencia seleccionada. Total estimado: ${projectedMixTotal.toLocaleString('es-CO')}%.`)
       }
 
@@ -453,9 +527,9 @@ export function BomPage() {
       }
 
       const normalizedInput = {
-        ...versionForm,
-        valid_from_month: fromMonthInputValue(versionForm.valid_from_month),
-        valid_to_month: fromMonthInputValue(versionForm.valid_to_month),
+        ...effectiveVersionForm,
+        valid_from_month: fromMonthInputValue(effectiveVersionForm.valid_from_month),
+        valid_to_month: fromMonthInputValue(effectiveVersionForm.valid_to_month),
       }
 
       if (drawerMode === 'version-edit' && selectedVersion) {
@@ -858,19 +932,36 @@ export function BomPage() {
             </div>
             <div className="form-group">
               <label>FIT</label>
-              <select className="form-control" value={versionForm.fit_id} onChange={(event) => setVersionForm({ ...versionForm, fit_id: event.target.value })}>
-                <option value="">Selecciona...</option>
-                {options.fits.map((fit) => (
-                  <option key={fit.id} value={fit.id}>{fit.code} · {fit.name}</option>
-                ))}
-              </select>
+              {isVersionFitLocked ? (
+                <input className="form-control" value={getFitLabel(versionForm.fit_id)} readOnly aria-readonly="true" />
+              ) : (
+                <select
+                  className="form-control"
+                  value={versionForm.fit_id}
+                  onChange={(event) => {
+                    const fitId = event.target.value
+                    setVersionForm({ ...versionForm, fit_id: fitId, version_code: getNextVersionCode(fitId) })
+                  }}
+                >
+                  <option value="">Selecciona...</option>
+                  {options.fits.map((fit) => (
+                    <option key={fit.id} value={fit.id}>{fit.code} · {fit.name}</option>
+                  ))}
+                </select>
+              )}
             </div>
           </div>
 
           <div className="form-row">
             <div className="form-group">
               <label>Código versión</label>
-              <input className="form-control" value={versionForm.version_code} onChange={(event) => setVersionForm({ ...versionForm, version_code: event.target.value })} placeholder="V1" />
+              <input
+                className="form-control"
+                value={versionForm.version_code}
+                readOnly
+                aria-readonly="true"
+                placeholder="Se asigna automáticamente"
+              />
             </div>
             <div className="form-group">
               <label>Estado</label>
@@ -981,12 +1072,16 @@ export function BomPage() {
         <form id="bom-form" className="drawer-form" onSubmit={handleBomSubmit}>
           <div className="form-group">
             <label>Versión del FIT</label>
-            <select className="form-control" value={bomForm.fit_version_id} onChange={(event) => setBomForm({ ...bomForm, fit_version_id: event.target.value })}>
-              <option value="">Selecciona...</option>
-              {options.fitVersions.map((version) => (
-                <option key={version.id} value={version.id}>{version.collectionCode} · {version.fitName} · {version.versionCode}</option>
-              ))}
-            </select>
+            {isBomVersionLocked ? (
+              <input className="form-control" value={getFitVersionLabel(bomForm.fit_version_id)} readOnly aria-readonly="true" />
+            ) : (
+              <select className="form-control" value={bomForm.fit_version_id} onChange={(event) => setBomForm({ ...bomForm, fit_version_id: event.target.value })}>
+                <option value="">Selecciona...</option>
+                {options.fitVersions.map((version) => (
+                  <option key={version.id} value={version.id}>{version.collectionCode} · {version.fitName} · {version.versionCode}</option>
+                ))}
+              </select>
+            )}
           </div>
 
           <div className="form-row">
@@ -1003,14 +1098,26 @@ export function BomPage() {
             </div>
           </div>
 
-          <div className="form-group">
-            <label>Material</label>
-            <select className="form-control" value={bomForm.material_id} onChange={(event) => setBomForm({ ...bomForm, material_id: event.target.value })}>
-              <option value="">Selecciona...</option>
-              {options.materials.map((material) => (
-                <option key={material.id} value={material.id}>{material.code} · {material.name} · {mapUnit(material.unit)}</option>
-              ))}
-            </select>
+          <div className="form-row">
+            <div className="form-group">
+              <label>Tipo de material</label>
+              <select className="form-control" value={bomMaterialTypeFilter} onChange={(event) => handleBomMaterialTypeChange(event.target.value)}>
+                <option value="">Todos los tipos</option>
+                {materialTypeOptions.map((type) => (
+                  <option key={type.value} value={type.value}>{type.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label>Material</label>
+              <select className="form-control" value={bomForm.material_id} onChange={(event) => handleBomMaterialChange(event.target.value)}>
+                <option value="">Selecciona...</option>
+                {filteredBomMaterials.map((material) => (
+                  <option key={material.id} value={material.id}>{material.code} · {material.name} · {formatMaterialTypeLabel(material.material_type)} · {mapUnit(material.unit)}</option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="form-group">

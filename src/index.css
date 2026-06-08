@@ -327,7 +327,7 @@ select {
 }
 
 .kpi-row.compact {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .kpi-card {
@@ -1123,7 +1123,7 @@ tbody td:first-child {
 }
 
 .visual-fit-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .visual-version-grid,
@@ -1581,7 +1581,7 @@ tbody td:first-child {
 
 .gantt-items {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -1650,7 +1650,7 @@ tbody td:first-child {
 
 .fit-start-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -1732,7 +1732,7 @@ tbody td:first-child {
 
 .control-number-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -1765,6 +1765,21 @@ tbody td:first-child {
 .control-number-btn.selected {
   border-color: var(--black);
   background: var(--smoke);
+}
+
+.control-number-grid.edit-mode {
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.control-number-btn.swap-target:hover {
+  border-color: var(--black);
+  background: var(--smoke);
+  transform: translateY(-1px);
+}
+
+.control-number-btn small {
+  color: var(--mid);
+  font-size: 10px;
 }
 
 .control-number-btn:disabled {
@@ -1824,6 +1839,33 @@ tbody td:first-child {
   font-size: 11px;
 }
 
+
+.calendar-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.calendar-month-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.calendar-month-nav span {
+  color: var(--corp);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.calendar-month-nav .action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .calendar-legend {
   display: flex;
   gap: 10px;
@@ -1880,16 +1922,40 @@ tbody td:first-child {
   background: var(--white);
 }
 
+.calendar-day.today {
+  position: relative;
+  outline: 2px solid var(--black);
+  outline-offset: -2px;
+  background: #fffdf5;
+}
+
 .calendar-day.muted {
   background: #fafafa;
   color: var(--mid);
 }
 
 .calendar-day-number {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   color: var(--black);
   font-size: 11px;
   font-weight: 900;
   margin-bottom: 6px;
+}
+
+.calendar-today-pill {
+  border: 1px solid var(--black);
+  border-radius: 999px;
+  background: var(--black);
+  color: var(--white);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.7px;
+  line-height: 1;
+  padding: 4px 7px;
+  text-transform: uppercase;
 }
 
 .calendar-event-list {
@@ -2027,6 +2093,14 @@ tbody td:first-child {
     flex-direction: column;
     align-items: flex-start;
   }
+
+  .calendar-tools {
+    align-items: flex-start;
+  }
+
+  .calendar-month-nav {
+    flex-wrap: wrap;
+  }
 }
 
 /* Kardex: resumen por tipo + detalle por material */
@@ -2074,5 +2148,297 @@ tbody td:first-child {
 @media (max-width: 700px) {
   .kardex-control-summary {
     grid-template-columns: 1fr;
+  }
+}
+
+
+.kardex-table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 0 12px;
+  flex-wrap: wrap;
+}
+
+.kardex-table-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.kardex-table-toolbar__label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--mid);
+}
+
+.btn-sm {
+  padding: 7px 10px;
+  min-height: 34px;
+  font-size: 11px;
+}
+
+.kardex-target-table {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: unset;
+  table-layout: fixed;
+  font-size: 10.5px;
+}
+
+.kardex-target-table th,
+.kardex-target-table td {
+  border-right: 1px solid var(--light);
+  padding: 6px 10px;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.kardex-target-table thead th {
+  text-align: center;
+  padding: 7px 10px;
+}
+
+.kardex-target-table th:not(:first-child),
+.kardex-target-table td:not(:first-child) {
+  width: 150px;
+  min-width: 150px;
+  max-width: 150px;
+}
+
+.kardex-target-table .kardex-row-header,
+.kardex-target-table tbody td:first-child {
+  background: var(--white);
+  text-align: left;
+  width: 235px;
+  min-width: 235px;
+  max-width: 235px;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.kardex-target-table.kardex-left-pinned .kardex-row-header,
+.kardex-target-table.kardex-left-pinned tbody td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+}
+
+.kardex-target-table.kardex-left-scroll .kardex-row-header,
+.kardex-target-table.kardex-left-scroll tbody td:first-child {
+  position: relative;
+  left: auto;
+  z-index: 1;
+}
+
+.kardex-target-table tbody td:first-child {
+  padding-left: 12px;
+}
+
+.kardex-target-table thead .kardex-row-header {
+  z-index: 4;
+  background: var(--black);
+}
+
+.kardex-target-table.kardex-left-hidden .kardex-row-header,
+.kardex-target-table.kardex-left-hidden tbody td:first-child {
+  display: none;
+}
+
+.kardex-date-header-row th {
+  background: var(--black);
+  color: var(--white);
+}
+
+.kardex-month-header-row th {
+  background: #f2f2f2;
+  color: var(--black);
+  font-weight: 900;
+}
+
+.kardex-control-header-row th {
+  background: #dff7fb;
+  color: var(--black);
+  font-weight: 900;
+}
+
+.kardex-consolidated-row td {
+  background: #0d2f3a !important;
+  color: var(--white);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+}
+
+.kardex-target-table .kardex-pivot-label {
+  background: var(--white);
+  color: var(--black);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.kardex-calculated-row td {
+  background: #efefef;
+}
+
+.kardex-alert-row td {
+  background: #f8ffe5;
+}
+
+.kardex-consumption-row td,
+.kardex-final-row td {
+  background: #f6ffd9;
+}
+
+.kardex-production-row td {
+  background: #dff7fb;
+}
+
+.kardex-security-row td {
+  background: #e8f6df;
+}
+
+.kardex-net-final-row td {
+  background: #d9d9d9;
+}
+
+/* Kardex: agrupación visual por mes y ramas de control */
+.kardex-month-row td {
+  background: #f1f1f1;
+  border-top: 2px solid var(--black);
+  border-bottom: 1px solid var(--light);
+  padding: 14px 16px;
+}
+
+.kardex-month-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.kardex-month-heading strong {
+  color: var(--black);
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: 0.4px;
+}
+
+.kardex-month-heading span {
+  color: var(--mid);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+
+.kardex-week-row td {
+  background: #fafafa;
+  border-left: 3px solid var(--black);
+  color: var(--black);
+  font-weight: 900;
+  padding: 10px 16px;
+}
+
+.kardex-week-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.kardex-week-heading strong {
+  font-size: 13px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.kardex-week-heading span {
+  color: var(--mid);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.kardex-month-cell {
+  color: var(--mid);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.kardex-branch-cell {
+  color: var(--black);
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.kardex-branch-cell span,
+.kardex-control-branch-row span {
+  display: inline-block;
+  color: var(--mid);
+  font-weight: 900;
+  margin-right: 8px;
+}
+
+.kardex-control-branch-row td {
+  background: var(--white);
+  border-left: 3px solid var(--black);
+  color: var(--black);
+  font-weight: 900;
+  letter-spacing: 0.2px;
+}
+
+/* Inventario de bodega */
+.inventory-filter .search-input {
+  min-width: 260px;
+  flex: 1;
+}
+
+.table-input {
+  width: 100%;
+  min-width: 120px;
+  padding: 6px 8px;
+  border: 1px solid var(--light);
+  border-radius: 3px;
+  background: var(--smoke);
+  color: var(--graphite);
+  font-size: 11px;
+}
+
+.inventory-number-input {
+  max-width: 140px;
+}
+
+.inventory-notes-input {
+  min-width: 220px;
+}
+
+.inventory-row-note {
+  display: block;
+  margin-top: 4px;
+  color: var(--mid);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+@media (max-width: 900px) {
+  .kardex-table-toolbar {
+    align-items: flex-start;
   }
 }

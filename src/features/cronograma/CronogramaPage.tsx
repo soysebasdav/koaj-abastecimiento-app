@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Badge } from '../../components/Badge'
 import { KpiCard } from '../../components/KpiCard'
-import { formatDate, formatDateMonth, formatNumber } from '../../utils/format'
+import { formatDate, formatNumber } from '../../utils/format'
 import { getGanttOptions, toMonthInputValue } from '../gantt/ganttService'
 import type { GanttOptions } from '../gantt/ganttTypes'
 
@@ -18,6 +18,14 @@ type CalendarEvent = {
   affectsKardex: boolean
   order: number
   notes: string | null
+}
+
+type CalendarWeekOption = {
+  id: string
+  start: string
+  end: string
+  label: string
+  weekNumber: number
 }
 
 const statusLabels: Record<CalendarEvent['status'], string> = {
@@ -40,7 +48,8 @@ export function CronogramaPage() {
     processDates: [],
     fitStarts: [],
   })
-  const [selectedMonth, setSelectedMonth] = useState('all')
+  const [selectedCalendarMonth, setSelectedCalendarMonth] = useState('')
+  const [selectedWeekStart, setSelectedWeekStart] = useState('all')
   const [selectedMaterialType, setSelectedMaterialType] = useState('all')
   const [selectedStatus, setSelectedStatus] = useState('all')
   const [search, setSearch] = useState('')
@@ -72,7 +81,7 @@ export function CronogramaPage() {
       periodMonth: point.periodMonth,
       materialType: point.materialType,
       materialTypeLabel: point.materialTypeLabel,
-      title: `Control ${point.controlNumber}`,
+      title: `${formatMonthName(point.periodMonth)} Control ${point.controlNumber}`,
       subtitle: point.label,
       status: point.status,
       source: 'control',
@@ -105,20 +114,23 @@ export function CronogramaPage() {
     })
   }, [options.controlDates, options.processDates])
 
-  const monthOptions = useMemo(() => {
-    return Array.from(new Set(events.map((event) => event.periodMonth))).sort()
-  }, [events])
+  const monthOptions = useMemo(() => buildContinuousMonthOptions(events), [events])
+  const effectiveCalendarMonth = selectedCalendarMonth || monthOptions[0] || getCurrentMonthInputValue()
+  const weekOptions = useMemo(() => buildCalendarWeekOptions(effectiveCalendarMonth), [effectiveCalendarMonth])
+  const activeWeek = useMemo(() => {
+    return weekOptions.find((week) => week.start === selectedWeekStart) ?? null
+  }, [selectedWeekStart, weekOptions])
 
-  const effectiveMonth = useMemo(() => {
-    if (selectedMonth !== 'all') return selectedMonth
-    return monthOptions[0] ?? ''
-  }, [monthOptions, selectedMonth])
+  useEffect(() => {
+    if (selectedWeekStart !== 'all' && !weekOptions.some((week) => week.start === selectedWeekStart)) {
+      setSelectedWeekStart('all')
+    }
+  }, [selectedWeekStart, weekOptions])
 
   const query = search.trim().toLowerCase()
 
   const filteredEvents = useMemo(() => {
     return events.filter((event) => {
-      const matchesMonth = selectedMonth === 'all' || event.periodMonth === selectedMonth
       const matchesType = selectedMaterialType === 'all' || event.materialType === selectedMaterialType
       const matchesStatus = selectedStatus === 'all' || event.status === selectedStatus
       const matchesSearch = !query || [
@@ -129,16 +141,46 @@ export function CronogramaPage() {
         sourceLabels[event.source],
       ].join(' ').toLowerCase().includes(query)
 
-      return matchesMonth && matchesType && matchesStatus && matchesSearch
+      return matchesType && matchesStatus && matchesSearch
     })
-  }, [events, query, selectedMaterialType, selectedMonth, selectedStatus])
+  }, [events, query, selectedMaterialType, selectedStatus])
 
-  const calendarDays = useMemo(() => buildCalendarDays(effectiveMonth, filteredEvents), [effectiveMonth, filteredEvents])
-  const selectedMonthEvents = filteredEvents.filter((event) => event.periodMonth === effectiveMonth)
-  const controlCount = selectedMonthEvents.filter((event) => event.source === 'control').length
-  const processCount = selectedMonthEvents.filter((event) => event.source === 'process').length
-  const delayedCount = filteredEvents.filter((event) => event.status === 'delayed').length
-  const doneCount = filteredEvents.filter((event) => event.status === 'done').length
+  const monthEvents = useMemo(() => {
+    return filteredEvents.filter((event) => toMonthInputValue(event.date) === effectiveCalendarMonth)
+  }, [effectiveCalendarMonth, filteredEvents])
+
+  const visibleEvents = useMemo(() => {
+    if (!activeWeek) return monthEvents
+    return monthEvents.filter((event) => event.date >= activeWeek.start && event.date <= activeWeek.end)
+  }, [activeWeek, monthEvents])
+
+  const calendarDays = useMemo(() => {
+    return buildCalendarDays(effectiveCalendarMonth, visibleEvents, activeWeek)
+  }, [activeWeek, effectiveCalendarMonth, visibleEvents])
+
+  const controlCount = visibleEvents.filter((event) => event.source === 'control').length
+  const processCount = visibleEvents.filter((event) => event.source === 'process').length
+  const delayedCount = visibleEvents.filter((event) => event.status === 'delayed').length
+  const doneCount = visibleEvents.filter((event) => event.status === 'done').length
+  const visiblePeriodLabel = activeWeek ? activeWeek.label : formatMonthInputTitle(effectiveCalendarMonth)
+
+  function changeCalendarMonth(value: string) {
+    if (!value) return
+    setSelectedCalendarMonth(value)
+    setSelectedWeekStart('all')
+  }
+
+  function goToPreviousMonth() {
+    changeCalendarMonth(shiftMonthInput(effectiveCalendarMonth, -1))
+  }
+
+  function goToNextMonth() {
+    changeCalendarMonth(shiftMonthInput(effectiveCalendarMonth, 1))
+  }
+
+  function goToToday() {
+    changeCalendarMonth(getCurrentMonthInputValue())
+  }
 
   return (
     <>
@@ -150,10 +192,17 @@ export function CronogramaPage() {
             <option key={type.materialType} value={type.materialType}>{type.label} · {type.materialCount} materiales</option>
           ))}
         </select>
-        <select className="filter-select" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)}>
-          <option value="all">Todos los meses</option>
-          {monthOptions.map((month) => (
-            <option key={month} value={month}>{formatDateMonth(month)}</option>
+        <input
+          className="filter-select"
+          type="month"
+          value={effectiveCalendarMonth}
+          onChange={(event) => changeCalendarMonth(event.target.value)}
+          aria-label="Mes del calendario"
+        />
+        <select className="filter-select" value={selectedWeekStart} onChange={(event) => setSelectedWeekStart(event.target.value)}>
+          <option value="all">Todas las semanas del mes</option>
+          {weekOptions.map((week) => (
+            <option key={week.id} value={week.start}>{week.label}</option>
           ))}
         </select>
         <select className="filter-select" value={selectedStatus} onChange={(event) => setSelectedStatus(event.target.value)}>
@@ -175,12 +224,12 @@ export function CronogramaPage() {
       {error ? <div className="auth-alert error" style={{ marginBottom: 16 }}>{error}</div> : null}
 
       <div className="planning-note">
-        <strong>Origen del cronograma:</strong> esta vista toma todo lo planificado en GANTT y lo muestra como calendario. Los controles alimentan Kardex; los procesos son seguimiento operativo.
+        <strong>Cronograma normal:</strong> el calendario se navega por <strong>mes real</strong> y por <strong>semana</strong>. La tarjeta conserva el mes operativo creado en GANTT, por ejemplo <strong>Septiembre Control 1</strong>, aunque la fecha programada haya sido seleccionada en otro mes.
       </div>
 
       <div className="kpi-row compact">
-        <KpiCard label="Eventos filtrados" value={formatNumber(filteredEvents.length, 0)} sub="controles + procesos" />
-        <KpiCard label="Control Kardex" value={formatNumber(controlCount, 0)} sub={effectiveMonth ? formatDateMonth(effectiveMonth) : 'sin mes'} />
+        <KpiCard label="Eventos visibles" value={formatNumber(visibleEvents.length, 0)} sub={visiblePeriodLabel} />
+        <KpiCard label="Control Kardex" value={formatNumber(controlCount, 0)} sub="fechas de control" />
         <KpiCard label="Procesos" value={formatNumber(processCount, 0)} sub="solo GANTT" />
         <KpiCard label="Alertas" value={formatNumber(delayedCount, 0)} sub={`${doneCount} cumplidos`} />
       </div>
@@ -188,19 +237,25 @@ export function CronogramaPage() {
       <section className="calendar-panel">
         <div className="calendar-head">
           <div>
-            <h3>{effectiveMonth ? formatDateMonth(effectiveMonth) : 'Sin eventos programados'}</h3>
-            <p>Calendario operativo por tipo de material, con estado de cada fecha planificada.</p>
+            <h3>{formatMonthInputTitle(effectiveCalendarMonth)}</h3>
+            <p>{activeWeek ? `Vista semanal: ${activeWeek.label}` : 'Vista mensual. Si no hay eventos programados, el calendario queda vacío.'}</p>
           </div>
-          <div className="calendar-legend">
-            <span><i className="legend-dot control" /> Control Kardex</span>
-            <span><i className="legend-dot process" /> Proceso</span>
+          <div className="calendar-tools">
+            <div className="calendar-month-nav" aria-label="Navegación de meses del calendario">
+              <button className="action-btn" type="button" onClick={goToPreviousMonth}>← Mes anterior</button>
+              <span>{visiblePeriodLabel}</span>
+              <button className="action-btn" type="button" onClick={goToToday}>Hoy</button>
+              <button className="action-btn" type="button" onClick={goToNextMonth}>Mes siguiente →</button>
+            </div>
+            <div className="calendar-legend">
+              <span><i className="legend-dot control" /> Control Kardex</span>
+              <span><i className="legend-dot process" /> Proceso</span>
+            </div>
           </div>
         </div>
 
         {isLoading ? (
           <div className="empty-state">Cargando cronograma...</div>
-        ) : !effectiveMonth ? (
-          <div className="empty-state">No hay fechas planificadas en el GANTT.</div>
         ) : (
           <div className="calendar-grid">
             {['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'].map((day) => (
@@ -208,13 +263,17 @@ export function CronogramaPage() {
             ))}
 
             {calendarDays.map((day) => (
-              <div className={`calendar-day ${day.isCurrentMonth ? '' : 'muted'}`} key={day.key}>
-                <div className="calendar-day-number">{day.dayNumber}</div>
+              <div className={`calendar-day ${day.isCurrentMonth ? '' : 'muted'} ${day.isToday ? 'today' : ''}`} key={day.key}>
+                <div className="calendar-day-number">
+                  <span>{day.dayNumber}</span>
+                  {day.isToday ? <span className="calendar-today-pill">Hoy</span> : null}
+                </div>
                 <div className="calendar-event-list">
                   {day.events.slice(0, 4).map((event) => (
                     <div className={`calendar-event ${event.source} ${event.status}`} key={event.id}>
                       <div className="calendar-event-title">{event.title}</div>
                       <div className="calendar-event-meta">{event.materialTypeLabel} · {sourceLabels[event.source]}</div>
+                      <div className="calendar-event-meta">Fecha programada: {formatDate(event.date)}</div>
                       <div className="calendar-event-status"><Badge>{statusLabels[event.status]}</Badge></div>
                     </div>
                   ))}
@@ -230,18 +289,18 @@ export function CronogramaPage() {
         <div className="calendar-head">
           <div>
             <h3>Listado de eventos</h3>
-            <p>Detalle de controles y procesos planificados según los filtros actuales.</p>
+            <p>Detalle de controles y procesos planificados según el mes, la semana y los filtros actuales.</p>
           </div>
         </div>
 
         <div className="calendar-agenda">
-          {filteredEvents.length === 0 ? (
-            <div className="empty-state">No hay eventos con los filtros seleccionados.</div>
-          ) : filteredEvents.map((event) => (
+          {visibleEvents.length === 0 ? (
+            <div className="empty-state">No hay eventos programados para el mes o semana seleccionada.</div>
+          ) : visibleEvents.map((event) => (
             <div className={`agenda-item ${event.source} ${event.status}`} key={event.id}>
               <div className="agenda-date">
                 <strong>{formatDate(event.date)}</strong>
-                <span>{formatDateMonth(event.periodMonth)}</span>
+                <span>Mes control: {formatMonthTitle(event.periodMonth)}</span>
               </div>
               <div className="agenda-content">
                 <div className="visual-eyebrow">{event.materialTypeLabel} · {sourceLabels[event.source]}</div>
@@ -257,17 +316,19 @@ export function CronogramaPage() {
   )
 }
 
-function buildCalendarDays(periodMonth: string, events: CalendarEvent[]) {
+function buildCalendarDays(periodMonth: string, events: CalendarEvent[], activeWeek: CalendarWeekOption | null) {
   if (!periodMonth) return []
 
-  const monthInput = toMonthInputValue(periodMonth)
-  const firstDay = new Date(`${monthInput}-01T00:00:00`)
-  const lastDay = new Date(firstDay.getFullYear(), firstDay.getMonth() + 1, 0)
-  const startOffset = (firstDay.getDay() + 6) % 7
-  const gridStart = new Date(firstDay)
-  gridStart.setDate(firstDay.getDate() - startOffset)
+  const controlMonthStart = parseDateOnly(`${periodMonth}-01`)
+  if (!controlMonthStart) return []
 
-  const totalCells = Math.ceil((startOffset + lastDay.getDate()) / 7) * 7
+  const controlMonthEnd = new Date(controlMonthStart.getFullYear(), controlMonthStart.getMonth() + 1, 0)
+  const rangeStart = activeWeek ? parseDateOnly(activeWeek.start) : getWeekStart(controlMonthStart)
+  const rangeEnd = activeWeek ? parseDateOnly(activeWeek.end) : getWeekEnd(controlMonthEnd)
+  if (!rangeStart || !rangeEnd) return []
+
+  const totalCells = Math.max(7, Math.round((rangeEnd.getTime() - rangeStart.getTime()) / 86_400_000) + 1)
+  const todayKey = toDateKey(new Date())
   const eventMap = events.reduce<Record<string, CalendarEvent[]>>((acc, event) => {
     acc[event.date] = acc[event.date] ?? []
     acc[event.date].push(event)
@@ -275,15 +336,161 @@ function buildCalendarDays(periodMonth: string, events: CalendarEvent[]) {
   }, {})
 
   return Array.from({ length: totalCells }, (_, index) => {
-    const date = new Date(gridStart)
-    date.setDate(gridStart.getDate() + index)
-    const key = date.toISOString().slice(0, 10)
+    const date = new Date(rangeStart)
+    date.setDate(rangeStart.getDate() + index)
+    const key = toDateKey(date)
 
     return {
       key,
       dayNumber: date.getDate(),
-      isCurrentMonth: date.getMonth() === firstDay.getMonth(),
+      isCurrentMonth: date.getFullYear() === controlMonthStart.getFullYear() && date.getMonth() === controlMonthStart.getMonth(),
+      isToday: key === todayKey,
       events: eventMap[key] ?? [],
     }
   })
+}
+
+function buildContinuousMonthOptions(events: CalendarEvent[]) {
+  const eventMonths = Array.from(new Set(events.map((event) => toMonthInputValue(event.date)).filter(Boolean))).sort()
+  if (eventMonths.length === 0) return []
+
+  const firstMonth = parseDateOnly(`${eventMonths[0]}-01`)
+  const lastMonth = parseDateOnly(`${eventMonths[eventMonths.length - 1]}-01`)
+  if (!firstMonth || !lastMonth) return eventMonths
+
+  const months: string[] = []
+  const cursor = new Date(firstMonth.getFullYear(), firstMonth.getMonth(), 1)
+  while (cursor <= lastMonth) {
+    months.push(toMonthKey(cursor))
+    cursor.setMonth(cursor.getMonth() + 1)
+  }
+
+  return months
+}
+
+function buildCalendarWeekOptions(monthInput: string): CalendarWeekOption[] {
+  const monthStart = parseDateOnly(`${monthInput}-01`)
+  if (!monthStart) return []
+
+  const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0)
+  const rangeStart = getWeekStart(monthStart)
+  const rangeEnd = getWeekEnd(monthEnd)
+  const options: CalendarWeekOption[] = []
+
+  for (const cursor = new Date(rangeStart); cursor <= rangeEnd; cursor.setDate(cursor.getDate() + 7)) {
+    const weekStart = new Date(cursor)
+    const weekEnd = new Date(cursor)
+    weekEnd.setDate(weekStart.getDate() + 6)
+
+    const referenceDate = clampDate(monthStart, weekStart, weekEnd)
+    const weekNumber = getOperationalWeekNumber(referenceDate)
+    options.push({
+      id: toDateKey(weekStart),
+      start: toDateKey(weekStart),
+      end: toDateKey(weekEnd),
+      label: `Semana ${weekNumber} · ${formatShortDate(weekStart)} - ${formatShortDate(weekEnd)}`,
+      weekNumber,
+    })
+  }
+
+  return options
+}
+
+function getOperationalWeekNumber(date: Date) {
+  const yearStart = new Date(date.getFullYear(), 0, 1)
+  const firstMonday = new Date(yearStart)
+
+  while (firstMonday.getDay() !== 1) {
+    firstMonday.setDate(firstMonday.getDate() + 1)
+  }
+
+  if (date < firstMonday) return 1
+
+  const diffDays = Math.floor((date.getTime() - firstMonday.getTime()) / 86_400_000)
+  return 2 + Math.floor(diffDays / 7)
+}
+
+function getWeekStart(date: Date) {
+  const weekStart = new Date(date)
+  const offset = (weekStart.getDay() + 6) % 7
+  weekStart.setDate(weekStart.getDate() - offset)
+  return weekStart
+}
+
+function getWeekEnd(date: Date) {
+  const weekEnd = new Date(date)
+  const offset = (weekEnd.getDay() + 6) % 7
+  weekEnd.setDate(weekEnd.getDate() + (6 - offset))
+  return weekEnd
+}
+
+function clampDate(monthStart: Date, weekStart: Date, weekEnd: Date) {
+  if (monthStart < weekStart) return weekStart
+  if (monthStart > weekEnd) return weekEnd
+  return monthStart
+}
+
+function shiftMonthInput(monthInput: string, delta: number) {
+  const baseDate = parseDateOnly(`${monthInput}-01`) ?? new Date()
+  const shifted = new Date(baseDate.getFullYear(), baseDate.getMonth() + delta, 1)
+  return toMonthKey(shifted)
+}
+
+function getCurrentMonthInputValue() {
+  return toMonthKey(new Date())
+}
+
+function toMonthKey(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  return `${year}-${month}`
+}
+
+function formatMonthName(value: string | null | undefined) {
+  if (!value) return 'Sin mes'
+
+  const date = parseDateOnly(value)
+  if (!date) return value
+
+  const label = date.toLocaleDateString('es-CO', { month: 'long' })
+  return label.charAt(0).toUpperCase() + label.slice(1)
+}
+
+function formatMonthTitle(value: string | null | undefined) {
+  if (!value) return 'Sin mes'
+
+  const date = parseDateOnly(value)
+  if (!date) return value
+
+  const label = date.toLocaleDateString('es-CO', {
+    year: 'numeric',
+    month: 'long',
+  })
+
+  return label.charAt(0).toUpperCase() + label.slice(1)
+}
+
+function formatMonthInputTitle(value: string | null | undefined) {
+  return value ? formatMonthTitle(`${value}-01`) : 'Sin mes'
+}
+
+function formatShortDate(date: Date) {
+  return date.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }).replace('.', '')
+}
+
+function parseDateOnly(value: string | null | undefined) {
+  if (!value) return null
+
+  const [year, month, day] = value.slice(0, 10).split('-').map(Number)
+  if (!year || !month || !day) return null
+
+  const date = new Date(year, month - 1, day)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function toDateKey(date: Date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }

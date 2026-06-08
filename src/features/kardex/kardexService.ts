@@ -1,5 +1,6 @@
 import { supabase } from '../../lib/supabase'
 import { createAuditLog } from '../audit/auditService'
+import { listInventoryBalances } from '../inventory/inventoryService'
 import { formatMaterialTypeLabel } from '../../utils/materialTypes'
 import type {
   KardexControlPointView,
@@ -68,7 +69,7 @@ export async function listKardexControlPoints(): Promise<KardexControlPointView[
 }
 
 export async function getKardexOptions(): Promise<KardexOptions> {
-  const [materialsResult, controlPoints, requirements] = await Promise.all([
+  const [materialsResult, controlPoints, requirements, inventoryBalances] = await Promise.all([
     supabase
       .from('materials')
       .select('id, code, name, material_type, unit')
@@ -77,6 +78,7 @@ export async function getKardexOptions(): Promise<KardexOptions> {
       .order('code', { ascending: true }),
     listKardexControlPoints(),
     listKardexRequirements(),
+    listInventoryBalances(),
   ])
 
   if (materialsResult.error) throw new Error(materialsResult.error.message)
@@ -97,6 +99,10 @@ export async function getKardexOptions(): Promise<KardexOptions> {
     materials,
     controlPoints,
     requirements,
+    inventoryBalances: inventoryBalances.map((balance) => ({
+      materialId: balance.materialId,
+      totalBodega: balance.totalBodega,
+    })),
   }
 }
 

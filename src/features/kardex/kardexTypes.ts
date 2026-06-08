@@ -59,11 +59,17 @@ export type KardexRequirementView = {
   requiredQuantity: number
 }
 
+export type KardexInventoryBalance = {
+  materialId: string
+  totalBodega: number
+}
+
 export type KardexOptions = {
   materialTypes: MaterialTypeOption[]
   materials: MaterialOption[]
   controlPoints: KardexControlPointView[]
   requirements: KardexRequirementView[]
+  inventoryBalances: KardexInventoryBalance[]
 }
 
 export type KardexInputFormInput = {

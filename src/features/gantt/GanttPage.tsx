@@ -23,6 +23,9 @@ import type {
 
 type DrawerMode = 'control-create' | 'control-edit' | 'process-create' | 'process-edit' | null
 
+const CONTROL_NUMBERS = [1, 2, 3, 4, 5]
+const MAX_CONTROLS_PER_MONTH = CONTROL_NUMBERS.length
+
 const emptyControlForm: ControlDateFormInput = {
   material_type: '',
   period_month: '',
@@ -230,7 +233,7 @@ export function GanttPage() {
 
   function firstAvailableControlNumber(materialType: string, monthInput: string, excludeId?: string) {
     const used = new Set(getUsedControlNumbers(materialType, monthInput, excludeId))
-    for (const num of [1, 2, 3, 4]) {
+    for (const num of CONTROL_NUMBERS) {
       if (!used.has(num)) return String(num)
     }
     return ''
@@ -239,6 +242,16 @@ export function GanttPage() {
   const usedControlNumbers = useMemo(() => {
     return getUsedControlNumbers(controlForm.material_type, controlForm.period_month, selectedControlDate?.id)
   }, [controlForm.material_type, controlForm.period_month, options.controlDates, selectedControlDate?.id])
+
+  const assignedControlDatesForEdit = useMemo(() => {
+    if (drawerMode !== 'control-edit' || !selectedControlDate) return [] as MaterialTypeControlDate[]
+
+    return options.controlDates
+      .filter((point) => point.materialType === selectedControlDate.materialType
+        && point.periodMonth === selectedControlDate.periodMonth
+        && point.status !== 'cancelled')
+      .sort((a, b) => a.controlNumber - b.controlNumber)
+  }, [drawerMode, options.controlDates, selectedControlDate])
 
   function openCreateControl(materialType = currentMaterialType()) {
     const month = selectedMonth !== 'all' ? toMonthInputValue(selectedMonth) : ''
@@ -431,7 +444,7 @@ export function GanttPage() {
           <div className="visual-bom-head">
             <div>
               <h3>Tipos de material guardados</h3>
-              <p>Selecciona un tipo para programar sus 4 fechas de control Kardex y sus procesos operativos.</p>
+              <p>Selecciona un tipo para programar sus 5 fechas de control Kardex y sus procesos operativos.</p>
             </div>
           </div>
           <div className="visual-card-grid material-grid">
@@ -455,7 +468,7 @@ export function GanttPage() {
         <>
           <div className="kpi-row compact">
             <KpiCard label="Tipo seleccionado" value={selectedTypeOption?.label ?? selectedMaterialType} sub={`${visibleMaterials.length} materiales`} />
-            <KpiCard label="Fechas control" value={formatNumber(selectedTypeControlCount, 0)} sub="máximo 4 por mes" />
+            <KpiCard label="Fechas control" value={formatNumber(selectedTypeControlCount, 0)} sub="máximo 5 por mes" />
             <KpiCard label="Procesos visuales" value={formatNumber(selectedTypeProcessCount, 0)} sub="no entran al Kardex" />
             <KpiCard label="FITs relacionados" value={formatNumber(relatedFitCount, 0)} sub="desde BOM/proyección" />
           </div>
@@ -478,7 +491,7 @@ export function GanttPage() {
                 <div className="gantt-lane" key={`control-${month}`}>
                   <div className="gantt-lane-label">
                     <strong>{formatDateMonth(month)}</strong>
-                    <span>{rows.length}/4 controles</span>
+                    <span>{rows.length}/5 controles</span>
                   </div>
                   <div className="gantt-items">
                     {rows.map((point) => (
@@ -594,42 +607,80 @@ export function GanttPage() {
         <form id="control-date-form" className="drawer-form" onSubmit={handleControlSubmit}>
           <div className="form-group">
             <label>Tipo de material</label>
-            <select className="form-control" value={controlForm.material_type} onChange={(event) => handleControlTypeChange(event.target.value)}>
+            <select
+              className="form-control"
+              value={controlForm.material_type}
+              onChange={(event) => handleControlTypeChange(event.target.value)}
+              disabled={drawerMode === 'control-edit'}
+            >
               <option value="">Selecciona...</option>
               {options.materialTypes.map((type) => (
                 <option key={type.materialType} value={type.materialType}>{type.label} · {type.unit}</option>
               ))}
             </select>
+            {drawerMode === 'control-edit' ? (
+              <small className="field-help">En edición se bloquea el tipo para que el intercambio sea solo entre controles del mismo material.</small>
+            ) : null}
           </div>
 
           <div className="form-group">
             <label>Mes</label>
-            <input className="form-control" type="month" value={controlForm.period_month} onChange={(event) => handleControlMonthChange(event.target.value)} />
+            <input
+              className="form-control"
+              type="month"
+              value={controlForm.period_month}
+              onChange={(event) => handleControlMonthChange(event.target.value)}
+              disabled={drawerMode === 'control-edit'}
+            />
+            {drawerMode === 'control-edit' ? (
+              <small className="field-help">En edición se conserva el mes original. Para crear nuevos controles usa + Fecha control.</small>
+            ) : null}
           </div>
 
           <div className="form-group">
-            <label>Fecha de control (1 a 4)</label>
-            <div className="control-number-grid">
-              {[1, 2, 3, 4].map((number) => {
+            <label>{drawerMode === 'control-edit' ? 'Intercambiar control asignado' : 'Fecha de control (1 a 5)'}</label>
+            <div className={`control-number-grid ${drawerMode === 'control-edit' ? 'edit-mode' : ''}`}>
+              {(drawerMode === 'control-edit' ? assignedControlDatesForEdit.map((point) => point.controlNumber) : CONTROL_NUMBERS).map((number) => {
                 const value = String(number)
                 const isSelected = controlForm.control_number === value
-                const isDisabled = usedControlNumbers.includes(number) && !isSelected
+                const isDisabled = drawerMode !== 'control-edit' && usedControlNumbers.includes(number) && !isSelected
+                const assignedPoint = assignedControlDatesForEdit.find((point) => point.controlNumber === number)
+                const isOriginalCurrent = drawerMode === 'control-edit' && selectedControlDate?.controlNumber === number
+                const helperText = drawerMode === 'control-edit'
+                  ? isOriginalCurrent && isSelected
+                    ? 'Actual'
+                    : isOriginalCurrent
+                      ? 'Origen'
+                      : isSelected
+                        ? 'Nuevo número'
+                        : 'Intercambiar'
+                  : isDisabled
+                    ? 'Ya asignado'
+                    : 'Disponible'
 
                 return (
                   <button
                     key={number}
                     type="button"
-                    className={`control-number-btn ${isSelected ? 'selected' : ''}`}
+                    className={`control-number-btn ${isSelected ? 'selected' : ''} ${drawerMode === 'control-edit' && !isSelected ? 'swap-target' : ''}`}
+                    title={drawerMode === 'control-edit' && !isSelected ? `Intercambiar con Control ${number}` : undefined}
                     disabled={isDisabled || !controlForm.period_month || !controlForm.material_type}
                     onClick={() => handleControlNumberSelect(value)}
                   >
                     <strong>{number}</strong>
-                    <span>{isDisabled ? 'Ya asignado' : 'Disponible'}</span>
+                    <span>{helperText}</span>
+                    {drawerMode === 'control-edit' && assignedPoint ? (
+                      <small>{formatDate(assignedPoint.controlDate)}</small>
+                    ) : null}
                   </button>
                 )
               })}
             </div>
-            <small className="field-help">Debes escoger el mes primero. Si una fecha de control ya existe para ese número, no se puede volver a seleccionar.</small>
+            <small className="field-help">
+              {drawerMode === 'control-edit'
+                ? 'Solo aparecen los controles ya asignados en este mes. Selecciona otro control para intercambiar: el actual tomará ese número y el otro tomará el número original.'
+                : 'Debes escoger el mes primero. Si una fecha de control ya existe para ese número, no se puede volver a seleccionar.'}
+            </small>
           </div>
 
           <div className="form-row">
@@ -742,12 +793,12 @@ function groupByMonth<T extends { periodMonth: string }>(rows: T[]) {
 function validateControlForm(form: ControlDateFormInput) {
   if (!form.material_type) throw new Error('El tipo de material es obligatorio.')
   if (!form.period_month) throw new Error('El mes es obligatorio.')
-  if (!form.control_number) throw new Error('Debes seleccionar uno de los 4 controles del mes.')
+  if (!form.control_number) throw new Error('Debes seleccionar uno de los 5 controles del mes.')
   if (!form.control_date) throw new Error('La fecha de control es obligatoria.')
 
   const controlNumber = Number(form.control_number)
-  if (Number.isNaN(controlNumber) || controlNumber < 1 || controlNumber > 4) {
-    throw new Error('El control debe estar entre 1 y 4.')
+  if (Number.isNaN(controlNumber) || controlNumber < 1 || controlNumber > MAX_CONTROLS_PER_MONTH) {
+    throw new Error(`El control debe estar entre 1 y ${MAX_CONTROLS_PER_MONTH}.`)
   }
 }
 
